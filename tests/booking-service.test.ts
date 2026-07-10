@@ -165,6 +165,69 @@ describe("BookingService", () => {
     expect(cancelled.status).toBe("cancelled");
   });
 
+  it("marks a slot as held for others while a session holds the last seat", async () => {
+    const db = await testDb();
+    const service = bookingService(db);
+    // Capacity 2 at 09:00: one real booking + one hold by session-A.
+    await service.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Jane Doe",
+      patientPhone: "081234567890",
+    });
+    await service.holdSlot(1, MONDAY, "09:00", "session-A");
+
+    const forOthers = (await service.getAvailableSlots(1, MONDAY, "session-B")).find(
+      (s) => s.startTime === "09:00",
+    );
+    expect(forOthers).toMatchObject({ available: false, unavailableReason: "held" });
+
+    // The holder's own hold never blocks itself.
+    const forHolder = (await service.getAvailableSlots(1, MONDAY, "session-A")).find(
+      (s) => s.startTime === "09:00",
+    );
+    expect(forHolder?.available).toBe(true);
+
+    // Booking the held seat as someone else fails; as the holder it succeeds.
+    await expect(
+      service.createBooking({
+        doctorId: 1,
+        date: MONDAY,
+        startTime: "09:00",
+        patientName: "John Roe",
+        patientPhone: "081298765432",
+        holderId: "session-B",
+      }),
+    ).rejects.toMatchObject({ code: "SLOT_TAKEN" });
+
+    await service.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Holder Patient",
+      patientPhone: "081211112222",
+      holderId: "session-A",
+    });
+    // Success released the hold; the slot is now genuinely full.
+    const after = (await service.getAvailableSlots(1, MONDAY, "session-B")).find(
+      (s) => s.startTime === "09:00",
+    );
+    expect(after).toMatchObject({ available: false, unavailableReason: "full" });
+  });
+
+  it("rejects holding a slot whose seats are all held or booked", async () => {
+    const service = bookingService(await testDb());
+    await service.holdSlot(1, MONDAY, "09:00", "session-A");
+    await service.holdSlot(1, MONDAY, "09:00", "session-B");
+    await expect(service.holdSlot(1, MONDAY, "09:00", "session-C")).rejects.toMatchObject({
+      code: "SLOT_TAKEN",
+    });
+    // Release frees a seat for the next session.
+    await service.releaseHold(1, MONDAY, "09:00", "session-A");
+    await expect(service.holdSlot(1, MONDAY, "09:00", "session-C")).resolves.toBeUndefined();
+  });
+
   it("looks up a booking by reference and phone with cancellability", async () => {
     const db = await testDb();
     const service = bookingService(db, () => new Date(`${MONDAY}T00:00:00`));

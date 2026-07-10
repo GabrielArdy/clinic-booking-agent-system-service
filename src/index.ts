@@ -4,6 +4,7 @@ import { runMigrations } from "./db/migrate.js";
 import { logger } from "./logging/logger.js";
 import { buildRepositories } from "./repositories/factory.js";
 import { BookingService } from "./services/booking-service.js";
+import { InMemorySlotLock, RedisSlotLock, type SlotLock } from "./services/slot-lock.js";
 import { ConversationRouter } from "./conversation/router.js";
 import { DisabledAIProvider, type AIProviderAdapter } from "./ai/provider.js";
 import { OpenRouterAdapter } from "./ai/openrouter-adapter.js";
@@ -15,7 +16,10 @@ const db = openDatabase(config);
 await runMigrations(db);
 
 const { repos, makeRepos } = buildRepositories(db);
-const booking = new BookingService(db, makeRepos);
+const slotLock: SlotLock = config.redisUrl
+  ? new RedisSlotLock(config.redisUrl, config.slotHoldTtlSeconds)
+  : new InMemorySlotLock(config.slotHoldTtlSeconds * 1000);
+const booking = new BookingService(db, makeRepos, undefined, slotLock);
 
 function buildAI(): AIProviderAdapter {
   if (!config.ai.enabled) return new DisabledAIProvider();
@@ -39,13 +43,14 @@ const server = app.listen(config.port, () => {
     dbType: config.dbType,
     aiEnabled: config.ai.enabled,
     aiProvider: config.ai.enabled ? config.ai.provider : "none",
+    slotLock: config.redisUrl ? "redis" : "in-memory",
   });
 });
 
 function shutdown(): void {
   logger.info("shutting down");
   server.close(() => {
-    void db.close().finally(() => process.exit(0));
+    void Promise.allSettled([db.close(), slotLock.close?.()]).finally(() => process.exit(0));
   });
 }
 

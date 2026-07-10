@@ -3,6 +3,7 @@ import { DomainError, type Booking, type Doctor, type Patient, type Slot, type S
 import type { Repositories, RepositoryFactory } from "../repositories/ports.js";
 import { generateBookingReference } from "./booking-reference.js";
 import { normalizePhone } from "./phone.js";
+import { InMemorySlotLock, slotLockKey, type SlotLock } from "./slot-lock.js";
 import { computeSlots, slotStartDate, weekdayOf } from "./slots.js";
 
 /** Bookings must be made at least this long before the appointment starts. */
@@ -18,6 +19,8 @@ export interface CreateBookingInput {
   startTime: string;
   patientName: string;
   patientPhone: string;
+  /** Session that held the slot; its own hold never blocks it. */
+  holderId?: string;
 }
 
 export interface BookingResult {
@@ -46,6 +49,8 @@ export class BookingService {
     private readonly makeRepos: RepositoryFactory,
     /** Injectable clock for testing time-based rules. */
     private readonly now: () => Date = () => new Date(),
+    /** Redis-backed in production; in-memory fallback for dev/tests. */
+    private readonly slotLock: SlotLock = new InMemorySlotLock(),
   ) {
     this.repos = makeRepos(db);
   }
@@ -76,15 +81,67 @@ export class BookingService {
 
   /**
    * All slots for the date, unavailable ones included and flagged:
-   * full (at capacity) or lead_time (starts in less than 6h).
+   * full (at capacity), lead_time (starts in less than 6h), or held (the
+   * remaining seats are locked by other in-progress booking sessions).
+   * `holderId` = requesting session, whose own hold never blocks it.
    */
-  async getAvailableSlots(doctorId: number, date: string): Promise<Slot[]> {
+  async getAvailableSlots(doctorId: number, date: string, holderId?: string): Promise<Slot[]> {
     const slots = await this.computeDaySlots(this.repos, doctorId, date);
-    return slots.map((s) =>
-      s.available && !this.meetsBookingLead(s.date, s.startTime)
-        ? { ...s, available: false, unavailableReason: "lead_time" as const }
-        : s,
+    return Promise.all(
+      slots.map(async (s) => {
+        if (!s.available) return s;
+        if (!this.meetsBookingLead(s.date, s.startTime)) {
+          return { ...s, available: false, unavailableReason: "lead_time" as const };
+        }
+        const held = await this.slotLock.countOthers(
+          slotLockKey(doctorId, s.date, s.startTime),
+          holderId,
+        );
+        if (s.bookedCount + held >= s.capacity) {
+          return { ...s, available: false, unavailableReason: "held" as const };
+        }
+        return s;
+      }),
     );
+  }
+
+  /**
+   * Locks one seat of a slot for the session while it finishes the booking
+   * flow. Auto-expires after the lock TTL (5 min) when the flow goes idle.
+   */
+  async holdSlot(
+    doctorId: number,
+    date: string,
+    startTime: string,
+    holderId: string,
+  ): Promise<void> {
+    const slots = await this.getAvailableSlots(doctorId, date, holderId);
+    const slot = slots.find((s) => s.startTime === startTime);
+    if (!slot || !slot.available) {
+      const message =
+        slot?.unavailableReason === "held"
+          ? "Slot is currently being booked by someone else"
+          : "Slot is no longer available";
+      throw new DomainError("SLOT_TAKEN", message);
+    }
+    const acquired = await this.slotLock.acquire(
+      slotLockKey(doctorId, date, startTime),
+      holderId,
+      slot.capacity - slot.bookedCount,
+    );
+    if (!acquired) {
+      throw new DomainError("SLOT_TAKEN", "Slot is currently being booked by someone else");
+    }
+  }
+
+  /** Releases the session's hold, e.g. on cancel, restart, or slot change. */
+  async releaseHold(
+    doctorId: number,
+    date: string,
+    startTime: string,
+    holderId: string,
+  ): Promise<void> {
+    await this.slotLock.release(slotLockKey(doctorId, date, startTime), holderId);
   }
 
   /** Slot computation over an arbitrary repositories bundle (base or tx-scoped). */
@@ -138,12 +195,21 @@ export class BookingService {
       // Transaction: re-verify availability, then insert. The partial unique
       // index on (doctor_id, date, start_time, slot_seq) WHERE status='active'
       // is the final guard against a concurrent write claiming the same seat.
-      return await this.db.tx(async (ex: Executor): Promise<BookingResult> => {
+      const result = await this.db.tx(async (ex: Executor): Promise<BookingResult> => {
         const repos = this.makeRepos(ex);
         const slots = await this.computeDaySlots(repos, input.doctorId, input.date);
         const slot = slots.find((s) => s.startTime === input.startTime);
         if (!slot || !slot.available) {
           throw new DomainError("SLOT_TAKEN", "Slot is no longer available");
+        }
+
+        // Other sessions' holds also reserve seats until they expire.
+        const held = await this.slotLock.countOthers(
+          slotLockKey(input.doctorId, input.date, slot.startTime),
+          input.holderId,
+        );
+        if (slot.bookedCount + held >= slot.capacity) {
+          throw new DomainError("SLOT_TAKEN", "Slot is currently being booked by someone else");
         }
 
         const patient = await this.createOrFindPatient(repos, input.patientName, input.patientPhone);
@@ -195,6 +261,12 @@ export class BookingService {
 
         return { booking, doctor, patient };
       });
+
+      // Booking persisted: the session's own hold has served its purpose.
+      if (input.holderId) {
+        await this.releaseHold(input.doctorId, input.date, input.startTime, input.holderId);
+      }
+      return result;
     } catch (err) {
       await this.repos.audit.record("booking_failed", {
         doctorId: input.doctorId,

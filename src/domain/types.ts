@@ -50,8 +50,11 @@ export interface Slot {
   bookedCount: number;
   /** false = cannot be booked (see unavailableReason). */
   available: boolean;
-  /** "full" = at capacity; "lead_time" = starts in less than the 6h booking lead. */
-  unavailableReason?: "full" | "lead_time";
+  /**
+   * "full" = at capacity; "lead_time" = starts in less than the 6h booking
+   * lead; "held" = remaining seats are locked by in-progress bookings.
+   */
+  unavailableReason?: "full" | "lead_time" | "held";
 }
 
 export interface Booking {

@@ -74,7 +74,7 @@ export class ConversationRouter {
       return turn;
     }
 
-    const prompt = await this.promptFor(stage, state);
+    const prompt = await this.promptFor(session.id, stage, state);
     const expectsFreeText = FREE_TEXT_STAGES.includes(stage);
     const interpretation = await interpret(
       this.ai,
@@ -86,10 +86,12 @@ export class ConversationRouter {
 
     let turn: AssistantTurn;
     if (interpretation.kind === "cancel") {
+      await this.releaseHeldSlot(session.id, state);
       turn = await this.enterStage(session.id, "cancelled", state, [
         "No problem, I've cancelled this booking flow. Send any message to start again.",
       ]);
     } else if (interpretation.kind === "restart") {
+      await this.releaseHeldSlot(session.id, state);
       turn = await this.enterStage(session.id, "select_purpose", {}, ["Starting over."]);
     } else {
       turn = await this.advance(session.id, stage, state, interpretation, message);
@@ -101,6 +103,12 @@ export class ConversationRouter {
 
   getHistory(sessionId: string): Promise<{ role: string; content: string; createdAt: string }[]> {
     return this.sessions.messages(sessionId);
+  }
+
+  /** Releases the session's slot hold, if it holds one. */
+  private async releaseHeldSlot(sessionId: string, state: ConversationState): Promise<void> {
+    if (state.doctorId === undefined || !state.date || !state.slotStart) return;
+    await this.booking.releaseHold(state.doctorId, state.date, state.slotStart, sessionId);
   }
 
   private async persist(turn: AssistantTurn, userMessage: string): Promise<void> {
@@ -225,7 +233,7 @@ export class ConversationRouter {
     }
     if (!date) return this.invalidInput(sessionId, "select_date", state);
 
-    const slots = await this.booking.getAvailableSlots(state.doctorId, date);
+    const slots = await this.booking.getAvailableSlots(state.doctorId, date, sessionId);
     if (slots.length === 0) {
       return this.enterStage(sessionId, "select_date", state, [
         `Sorry, ${state.doctorName} has no available slots on ${date}. Please pick another date.`,
@@ -251,17 +259,35 @@ export class ConversationRouter {
     ) {
       return this.invalidInput(sessionId, "select_slot", state);
     }
-    const slots = await this.booking.getAvailableSlots(state.doctorId, state.date);
+    const slots = await this.booking.getAvailableSlots(state.doctorId, state.date, sessionId);
     const slot = slots[interpretation.index];
     if (!slot) return this.invalidInput(sessionId, "select_slot", state);
     if (!slot.available) {
       const reason =
         slot.unavailableReason === "lead_time"
           ? "can no longer be booked (bookings close 6 hours before the appointment)"
-          : "is already full";
+          : slot.unavailableReason === "held"
+            ? "is currently being booked by someone else"
+            : "is already full";
       return this.enterStage(sessionId, "select_slot", state, [
         `Sorry, the ${slot.startTime} - ${slot.endTime} slot ${reason}. Please pick another time.`,
       ]);
+    }
+
+    // Lock a seat for this session while it finishes the flow (TTL 5 min).
+    try {
+      await this.booking.holdSlot(state.doctorId, state.date, slot.startTime, sessionId);
+    } catch (err) {
+      if (err instanceof DomainError && err.code === "SLOT_TAKEN") {
+        return this.enterStage(sessionId, "select_slot", state, [
+          `Sorry, the ${slot.startTime} - ${slot.endTime} slot ${
+            /being booked/.test(err.message)
+              ? "is currently being booked by someone else"
+              : "is no longer available"
+          }. Please pick another time.`,
+        ]);
+      }
+      throw err;
     }
 
     const next: ConversationState = {
@@ -333,6 +359,7 @@ export class ConversationRouter {
             : -1;
 
     if (choice === 1) {
+      await this.releaseHeldSlot(sessionId, state);
       return this.enterStage(
         sessionId,
         "select_slot",
@@ -341,6 +368,7 @@ export class ConversationRouter {
       );
     }
     if (choice === 2) {
+      await this.releaseHeldSlot(sessionId, state);
       return this.enterStage(sessionId, "cancelled", state, [
         "Booking cancelled. Send any message to start again.",
       ]);
@@ -364,6 +392,7 @@ export class ConversationRouter {
         startTime: state.slotStart,
         patientName: state.patientName,
         patientPhone: state.patientPhone,
+        holderId: sessionId, // hold is released by the service on success
       });
       return this.enterStage(sessionId, "booking_complete", {
         ...state,
@@ -372,6 +401,7 @@ export class ConversationRouter {
       });
     } catch (err) {
       if (err instanceof DomainError && err.code === "SLOT_TAKEN") {
+        await this.releaseHeldSlot(sessionId, state);
         return this.enterStage(
           sessionId,
           "select_slot",
@@ -545,7 +575,7 @@ export class ConversationRouter {
     state: ConversationState,
     prefixLines: string[] = [],
   ): Promise<AssistantTurn> {
-    const prompt = await this.promptFor(stage, state);
+    const prompt = await this.promptFor(sessionId, stage, state);
     const quickReplies: QuickReply[] = prompt.options.map((option, i) => ({
       label: option.label,
       value: String(i + 1),
@@ -562,7 +592,11 @@ export class ConversationRouter {
     };
   }
 
-  private async promptFor(stage: Stage, state: ConversationState): Promise<StagePrompt> {
+  private async promptFor(
+    sessionId: string,
+    stage: Stage,
+    state: ConversationState,
+  ): Promise<StagePrompt> {
     switch (stage) {
       case "greeting":
       case "select_purpose":
@@ -597,12 +631,20 @@ export class ConversationRouter {
       case "select_slot": {
         const options =
           state.doctorId !== undefined && state.date
-            ? (await this.booking.getAvailableSlots(state.doctorId, state.date)).map((s) => ({
-                label: s.available
-                  ? `${s.startTime} - ${s.endTime}`
-                  : `${s.startTime} - ${s.endTime} ${s.unavailableReason === "full" ? "(Full)" : "(Booking closed)"}`,
-                ...(s.available ? {} : { disabled: true }),
-              }))
+            ? (await this.booking.getAvailableSlots(state.doctorId, state.date, sessionId)).map(
+                (s) => ({
+                  label: s.available
+                    ? `${s.startTime} - ${s.endTime}`
+                    : `${s.startTime} - ${s.endTime} ${
+                        s.unavailableReason === "full"
+                          ? "(Full)"
+                          : s.unavailableReason === "held"
+                            ? "(Being booked)"
+                            : "(Booking closed)"
+                      }`,
+                  ...(s.available ? {} : { disabled: true }),
+                }),
+              )
             : [];
         const hasUnavailable = options.some((o) => o.disabled);
         return {

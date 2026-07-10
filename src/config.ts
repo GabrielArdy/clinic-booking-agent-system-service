@@ -10,6 +10,10 @@ export interface AppConfig {
   databasePath: string; // sqlite only
   postgres: PgConfig; // postgres only
   adminToken: string;
+  /** Redis connection URL; empty = in-memory slot locks (single process). */
+  redisUrl: string;
+  /** Seconds an in-progress booking holds its slot before auto-release. */
+  slotHoldTtlSeconds: number;
   ai: {
     enabled: boolean;
     provider: AIProviderName;
@@ -52,6 +56,8 @@ export function loadConfig(): AppConfig {
       ssl: (process.env.PGSSL ?? "").toLowerCase() === "true",
     },
     adminToken: process.env.ADMIN_TOKEN ?? "",
+    redisUrl: process.env.REDIS_URL ?? "",
+    slotHoldTtlSeconds: Number(process.env.SLOT_HOLD_TTL_SECONDS ?? 300),
     ai: {
       enabled: ai.apiKey.length > 0,
       provider,
