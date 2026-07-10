@@ -1,5 +1,16 @@
 import type { ScheduleException, ScheduleRule, Slot } from "../domain/types.js";
 
+/** Assumed duration of one consultation within a slot. */
+export const CONSULTATION_MINUTES = 15;
+
+/**
+ * How many patients fit in one slot: floor(slotMinutes / 15), min 1.
+ * e.g. 60 min -> 4, 45 min -> 3, 30 min -> 2, 15 min -> 1.
+ */
+export function slotCapacity(slotMinutes: number): number {
+  return Math.max(1, Math.floor(slotMinutes / CONSULTATION_MINUTES));
+}
+
 export function timeToMinutes(time: string): number {
   const [h, m] = time.split(":").map(Number);
   return (h ?? 0) * 60 + (m ?? 0);
@@ -16,6 +27,11 @@ export function weekdayOf(date: string): number {
   return new Date(`${date}T12:00:00Z`).getUTCDay();
 }
 
+/** Slot start as a Date in server-local (clinic) time. */
+export function slotStartDate(date: string, startTime: string): Date {
+  return new Date(`${date}T${startTime}:00`);
+}
+
 function blockedByException(
   slotStart: number,
   slotEnd: number,
@@ -30,25 +46,35 @@ function blockedByException(
 }
 
 /**
- * Derives bookable slots for one date: schedule rules minus exceptions
- * minus already-booked start times.
+ * Derives slots for one date: schedule rules minus exceptions. Slots at
+ * capacity are kept but flagged unavailable so the UI can show them as full.
  */
 export function computeSlots(
   date: string,
   rules: ScheduleRule[],
   exceptions: ScheduleException[],
-  bookedStartTimes: Set<string>,
+  bookedCounts: ReadonlyMap<string, number>,
 ): Slot[] {
   const slots: Slot[] = [];
   for (const rule of rules) {
     const ruleStart = timeToMinutes(rule.startTime);
     const ruleEnd = timeToMinutes(rule.endTime);
+    const capacity = slotCapacity(rule.slotMinutes);
     for (let start = ruleStart; start + rule.slotMinutes <= ruleEnd; start += rule.slotMinutes) {
       const end = start + rule.slotMinutes;
       const startTime = minutesToTime(start);
-      if (bookedStartTimes.has(startTime)) continue;
       if (blockedByException(start, end, exceptions)) continue;
-      slots.push({ date, startTime, endTime: minutesToTime(end) });
+      const bookedCount = bookedCounts.get(startTime) ?? 0;
+      const full = bookedCount >= capacity;
+      slots.push({
+        date,
+        startTime,
+        endTime: minutesToTime(end),
+        capacity,
+        bookedCount,
+        available: !full,
+        ...(full ? { unavailableReason: "full" as const } : {}),
+      });
     }
   }
   slots.sort((a, b) => a.startTime.localeCompare(b.startTime));

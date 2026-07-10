@@ -25,6 +25,8 @@ const DOMAIN_STATUS: Record<DomainError["code"], number> = {
   INVALID_INPUT: 400,
   PHONE_MISMATCH: 403,
   ALREADY_CANCELLED: 409,
+  TOO_LATE_TO_BOOK: 409,
+  TOO_LATE_TO_CANCEL: 409,
 };
 
 export function createApp(params: {

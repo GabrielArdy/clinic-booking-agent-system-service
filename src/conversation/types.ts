@@ -1,5 +1,6 @@
 export const STAGES = [
   "greeting",
+  "select_purpose",
   "select_specialty",
   "select_doctor",
   "select_date",
@@ -8,6 +9,11 @@ export const STAGES = [
   "collect_patient_phone",
   "confirm_booking",
   "booking_complete",
+  "check_collect_reference",
+  "check_collect_phone",
+  "check_result",
+  "confirm_cancellation",
+  "cancellation_complete",
   "cancelled",
   "handoff_pending",
 ] as const;
@@ -26,12 +32,17 @@ export interface ConversationState {
   patientName?: string;
   patientPhone?: string;
   bookingReference?: string;
+  /** Check/cancel flow: reference + phone the user is looking up. */
+  lookupReference?: string;
+  lookupPhone?: string;
   invalidCount?: number;
 }
 
 export interface QuickReply {
   label: string;
   value: string;
+  /** true = shown but not selectable, e.g. a fully booked timeslot. */
+  disabled?: boolean;
 }
 
 export interface AssistantTurn {

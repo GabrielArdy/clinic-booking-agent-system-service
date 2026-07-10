@@ -45,6 +45,13 @@ export interface Slot {
   date: string;
   startTime: string;
   endTime: string;
+  /** Max concurrent bookings: floor(slotMinutes / 15), min 1. */
+  capacity: number;
+  bookedCount: number;
+  /** false = cannot be booked (see unavailableReason). */
+  available: boolean;
+  /** "full" = at capacity; "lead_time" = starts in less than the 6h booking lead. */
+  unavailableReason?: "full" | "lead_time";
 }
 
 export interface Booking {
@@ -124,7 +131,9 @@ export class DomainError extends Error {
       | "SLOT_TAKEN"
       | "INVALID_INPUT"
       | "PHONE_MISMATCH"
-      | "ALREADY_CANCELLED",
+      | "ALREADY_CANCELLED"
+      | "TOO_LATE_TO_BOOK"
+      | "TOO_LATE_TO_CANCEL",
     message: string,
   ) {
     super(message);

@@ -5,7 +5,7 @@
  */
 export function normalizePhone(input: string): string | null {
   const trimmed = input.trim();
-  if (!/^[+\d][\d\s\-().]*$/.test(trimmed)) return null;
+  if (!/^[+(\d][\d\s\-().]*$/.test(trimmed)) return null;
   let digits = trimmed.replace(/\D/g, "");
   // Indonesian convention: local '08xx' -> international '628xx'.
   if (digits.startsWith("08")) {

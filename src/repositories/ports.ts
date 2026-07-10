@@ -131,9 +131,12 @@ export interface PatientRepo {
 }
 
 export interface BookingRepo {
-  activeStartTimes(doctorId: number, date: string): Promise<Set<string>>;
-  isSlotTaken(doctorId: number, date: string, startTime: string): Promise<boolean>;
-  create(booking: Omit<Booking, "id" | "status">): Promise<Booking>;
+  /** Active booking count per start time for one doctor/date. */
+  activeSlotCounts(doctorId: number, date: string): Promise<Map<string, number>>;
+  /** Seat indexes currently held by active bookings in one slot. */
+  activeSlotSeqs(doctorId: number, date: string, startTime: string): Promise<Set<number>>;
+  /** slotSeq = seat index within the slot (0..capacity-1); unique per active slot. */
+  create(booking: Omit<Booking, "id" | "status">, slotSeq: number): Promise<Booking>;
   findByReference(reference: string): Promise<Booking | null>;
   listByDoctorDate(doctorId: number, date: string): Promise<Booking[]>;
   cancel(id: number): Promise<void>;

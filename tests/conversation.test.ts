@@ -18,9 +18,16 @@ describe("ConversationRouter", () => {
     const { router } = await setup();
 
     let turn = await router.handle(undefined, "hi");
+    expect(turn.stage).toBe("select_purpose");
+    expect(turn.quickReplies.map((q) => q.label)).toEqual([
+      "Book an appointment",
+      "Check or cancel an appointment",
+    ]);
+    const sessionId = turn.sessionId;
+
+    turn = await router.handle(sessionId, "1");
     expect(turn.stage).toBe("select_specialty");
     expect(turn.quickReplies.length).toBeGreaterThan(0);
-    const sessionId = turn.sessionId;
 
     turn = await router.handle(sessionId, "General Medicine");
     expect(turn.stage).toBe("select_doctor");
@@ -50,10 +57,10 @@ describe("ConversationRouter", () => {
     const { router, sessions } = await setup();
     const first = await router.handle(undefined, "hello");
     const stored = await sessions.find(first.sessionId);
-    expect(stored?.stage).toBe("select_specialty");
+    expect(stored?.stage).toBe("select_purpose");
 
     const second = await router.handle(first.sessionId, "1");
-    expect(second.stage).toBe("select_doctor");
+    expect(second.stage).toBe("select_specialty");
   });
 
   it("cancels from any stage", async () => {
@@ -77,6 +84,7 @@ describe("ConversationRouter", () => {
     const { router, booking } = await setup();
     const first = await router.handle(undefined, "hi");
     const sessionId = first.sessionId;
+    await router.handle(sessionId, "1"); // Book an appointment
     await router.handle(sessionId, "General Medicine");
     await router.handle(sessionId, "1");
     await router.handle(sessionId, MONDAY);
@@ -84,7 +92,7 @@ describe("ConversationRouter", () => {
     await router.handle(sessionId, "Jane Doe");
     await router.handle(sessionId, "081234567890");
 
-    // Someone else books 09:00 before confirmation.
+    // Rivals fill the 09:00 slot (capacity 2 at 30 min) before confirmation.
     await booking.createBooking({
       doctorId: 1,
       date: MONDAY,
@@ -92,19 +100,142 @@ describe("ConversationRouter", () => {
       patientName: "Rival Patient",
       patientPhone: "081298765432",
     });
+    await booking.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Second Rival",
+      patientPhone: "081211112222",
+    });
 
     const turn = await router.handle(sessionId, "yes");
     expect(turn.stage).toBe("select_slot");
     expect(turn.message).toContain("just taken");
   });
 
+  it("flags full slots and rejects selecting them", async () => {
+    const { router, booking } = await setup();
+    // Fill 09:00 (capacity 2 at 30 min).
+    for (const phone of ["081298765432", "081211112222"]) {
+      await booking.createBooking({
+        doctorId: 1,
+        date: MONDAY,
+        startTime: "09:00",
+        patientName: "Filler Patient",
+        patientPhone: phone,
+      });
+    }
+
+    const first = await router.handle(undefined, "hi");
+    const sessionId = first.sessionId;
+    await router.handle(sessionId, "1"); // Book an appointment
+    await router.handle(sessionId, "General Medicine");
+    await router.handle(sessionId, "1");
+    const slotTurn = await router.handle(sessionId, MONDAY);
+    expect(slotTurn.stage).toBe("select_slot");
+
+    const fullReply = slotTurn.quickReplies.find((q) => q.label.startsWith("09:00"));
+    expect(fullReply?.label).toContain("(Full)");
+    expect(fullReply?.disabled).toBe(true);
+    const openReply = slotTurn.quickReplies.find((q) => q.label.startsWith("09:30"));
+    expect(openReply?.disabled).toBeUndefined();
+
+    // Picking the full slot anyway is rejected and stays on select_slot.
+    const rejected = await router.handle(sessionId, "1");
+    expect(rejected.stage).toBe("select_slot");
+    expect(rejected.message).toContain("already full");
+  });
+
   it("restarts after completion", async () => {
     const { router } = await setup();
     const first = await router.handle(undefined, "hi");
     const sessionId = first.sessionId;
+    await router.handle(sessionId, "1");
     await router.handle(sessionId, "Dermatology");
     const turn = await router.handle(sessionId, "restart");
-    expect(turn.stage).toBe("select_specialty");
+    expect(turn.stage).toBe("select_purpose");
     expect(turn.collectedEntities.specialtyId).toBeUndefined();
+  });
+
+  it("checks an appointment and cancels it, releasing the slot", async () => {
+    const { router, booking } = await setup();
+    const created = await booking.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Jane Doe",
+      patientPhone: "081234567890",
+    });
+
+    const first = await router.handle(undefined, "hi");
+    const sessionId = first.sessionId;
+
+    let turn = await router.handle(sessionId, "2"); // Check or cancel
+    expect(turn.stage).toBe("check_collect_reference");
+
+    turn = await router.handle(sessionId, created.booking.reference);
+    expect(turn.stage).toBe("check_collect_phone");
+
+    turn = await router.handle(sessionId, "081234567890");
+    expect(turn.stage).toBe("check_result");
+    expect(turn.message).toContain(created.booking.reference);
+    expect(turn.message).toContain("active");
+    expect(turn.quickReplies[0]?.label).toBe("Cancel this appointment");
+
+    turn = await router.handle(sessionId, "1"); // Cancel this appointment
+    expect(turn.stage).toBe("confirm_cancellation");
+
+    turn = await router.handle(sessionId, "1"); // Yes, cancel it
+    expect(turn.stage).toBe("cancellation_complete");
+    expect(turn.message).toContain("released");
+
+    // Seat released: slot bookable again.
+    const slot = (await booking.getAvailableSlots(1, MONDAY)).find(
+      (s) => s.startTime === "09:00",
+    );
+    expect(slot?.bookedCount).toBe(0);
+    expect(slot?.available).toBe(true);
+  });
+
+  it("rejects a lookup with the wrong phone and retries", async () => {
+    const { router, booking } = await setup();
+    const created = await booking.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Jane Doe",
+      patientPhone: "081234567890",
+    });
+
+    const first = await router.handle(undefined, "hi");
+    const sessionId = first.sessionId;
+    await router.handle(sessionId, "2");
+    await router.handle(sessionId, created.booking.reference);
+
+    const turn = await router.handle(sessionId, "081298765432"); // wrong phone
+    expect(turn.stage).toBe("check_collect_reference");
+    expect(turn.message).toContain("couldn't find");
+  });
+
+  it("offers no cancel option for an already cancelled booking", async () => {
+    const { router, booking } = await setup();
+    const created = await booking.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Jane Doe",
+      patientPhone: "081234567890",
+    });
+    await booking.cancelBooking(created.booking.reference, "081234567890");
+
+    const first = await router.handle(undefined, "hi");
+    const sessionId = first.sessionId;
+    await router.handle(sessionId, "2");
+    await router.handle(sessionId, created.booking.reference);
+    const turn = await router.handle(sessionId, "081234567890");
+
+    expect(turn.stage).toBe("check_result");
+    expect(turn.message).toContain("cancelled");
+    expect(turn.quickReplies.map((q) => q.label)).toEqual(["Main menu"]);
   });
 });

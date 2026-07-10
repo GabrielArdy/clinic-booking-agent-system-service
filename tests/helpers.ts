@@ -18,8 +18,8 @@ export function testRepos(db: Database): Repositories {
   return repositoryFactory(db.type)(db);
 }
 
-export function bookingService(db: Database): BookingService {
-  return new BookingService(db, repositoryFactory(db.type));
+export function bookingService(db: Database, now?: () => Date): BookingService {
+  return new BookingService(db, repositoryFactory(db.type), now);
 }
 
 /** Next date (from tomorrow) falling on the given weekday, as YYYY-MM-DD. */

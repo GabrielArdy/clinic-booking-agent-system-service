@@ -229,24 +229,27 @@ const BOOKING_SELECT = `
 
 class SqliteBookingRepository implements BookingRepo {
   constructor(private readonly ex: Executor) {}
-  async activeStartTimes(doctorId: number, date: string): Promise<Set<string>> {
-    const rows = await this.ex.all<{ start_time: string }>(
-      "SELECT start_time FROM bookings WHERE doctor_id = ? AND date = ? AND status = 'active'",
+  async activeSlotCounts(doctorId: number, date: string): Promise<Map<string, number>> {
+    const rows = await this.ex.all<{ start_time: string; n: number }>(
+      `SELECT start_time, COUNT(*) AS n FROM bookings
+       WHERE doctor_id = ? AND date = ? AND status = 'active'
+       GROUP BY start_time`,
       [doctorId, date],
     );
-    return new Set(rows.map((r) => r.start_time));
+    return new Map(rows.map((r) => [r.start_time, Number(r.n)]));
   }
-  async isSlotTaken(doctorId: number, date: string, startTime: string): Promise<boolean> {
-    const row = await this.ex.get(
-      `SELECT 1 FROM bookings WHERE doctor_id = ? AND date = ? AND start_time = ? AND status = 'active'`,
+  async activeSlotSeqs(doctorId: number, date: string, startTime: string): Promise<Set<number>> {
+    const rows = await this.ex.all<{ slot_seq: number }>(
+      `SELECT slot_seq FROM bookings
+       WHERE doctor_id = ? AND date = ? AND start_time = ? AND status = 'active'`,
       [doctorId, date, startTime],
     );
-    return row !== null;
+    return new Set(rows.map((r) => Number(r.slot_seq)));
   }
-  async create(booking: Omit<Booking, "id" | "status">): Promise<Booking> {
+  async create(booking: Omit<Booking, "id" | "status">, slotSeq: number): Promise<Booking> {
     const r = await this.ex.run(
-      `INSERT INTO bookings (reference, patient_id, doctor_id, date, start_time, end_time)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO bookings (reference, patient_id, doctor_id, date, start_time, end_time, slot_seq)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         booking.reference,
         booking.patientId,
@@ -254,6 +257,7 @@ class SqliteBookingRepository implements BookingRepo {
         booking.date,
         booking.startTime,
         booking.endTime,
+        slotSeq,
       ],
     );
     return { ...booking, id: r.lastId!, status: "active" };
