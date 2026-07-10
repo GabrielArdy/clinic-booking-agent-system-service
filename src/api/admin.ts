@@ -49,11 +49,11 @@ export function adminRouter(config: AppConfig, booking: BookingService): Router 
   router.post("/doctors", (req, res, next) => {
     try {
       const input = createDoctorSchema.parse(req.body);
-      const doctor = new DoctorRepository(req.app.get("db")).create(
-        input.fullName,
-        input.specialtyId,
-        input.photoUrl,
-      );
+      const doctor = new DoctorRepository(req.app.get("db")).create({
+        fullName: input.fullName,
+        specialtyId: input.specialtyId,
+        photoUrl: input.photoUrl,
+      });
       res.status(201).json({ doctor });
     } catch (err) {
       next(err);

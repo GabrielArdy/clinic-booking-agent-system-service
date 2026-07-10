@@ -6,6 +6,7 @@ import { logger } from "../logging/logger.js";
 import type { ConversationRouter } from "../conversation/router.js";
 import type { BookingService } from "../services/booking-service.js";
 import { adminRouter } from "./admin.js";
+import { cmsRouter } from "./cms.js";
 
 const chatSchema = z.object({
   sessionId: z.string().uuid().optional(),
@@ -81,6 +82,7 @@ export function createApp(params: {
   });
 
   app.use("/api/admin", adminRouter(config, booking));
+  app.use("/api/cms", cmsRouter(config));
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof z.ZodError) {

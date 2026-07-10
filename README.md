@@ -8,6 +8,7 @@ Node.js + TypeScript, Express, SQLite (better-sqlite3, raw SQL — no ORM), dete
 
 - **Deterministic router owns the flow.** The booking path is an explicit state machine (`greeting → select_specialty → select_doctor → select_date → select_slot → collect_patient_name → collect_patient_phone → confirm_booking → booking_complete`). The AI adapter only helps interpret free text; it never decides booking validity.
 - **Anti-double-booking** via a partial unique index on `bookings(doctor_id, date, start_time) WHERE status = 'active'`, plus a re-check inside the booking transaction.
+- **CMS console** (`/api/cms/*`) is a separate surface from the operational admin console, managing clinic content: Clinic Setting, Theme, Specialties, Doctor & Staff, TimeSlot presets, and Shift scheduling. Singletons (clinic, theme) use a `CHECK (id = 1)` row seeded by migration.
 - **AI is optional and pluggable.** Without an API key the system runs fully deterministic (numbered options, keyword matching). With it, free-form messages are classified into a constrained intent taxonomy and schema-validated before use. Provider selected by `AI_PROVIDER` (`openrouter` default, or `agentrouter` — OpenAI-compatible, see https://docs.agentrouter.org/); both implement the same `AIProviderAdapter` interface.
 - **Sessions persist in SQLite** — conversation state survives refresh/reconnect.
 
@@ -32,6 +33,21 @@ npm run dev            # start on :3000
 | GET/POST | `/api/admin/schedules` | List / create weekly schedule rules |
 | POST | `/api/admin/schedule-exceptions` | Block a date or time range |
 | GET | `/api/admin/bookings?doctorId=&date=` | Bookings by doctor and date |
+
+### CMS console (`/api/cms/*`, header `x-admin-token`)
+
+Separate from the operational admin console; manages clinic content and configuration. Reuses the admin token.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET/PUT | `/api/cms/clinic` | Clinic settings singleton (name, address, lat/lng, phone, email, permission letter, emblem, custom `extra`) |
+| GET/PUT | `/api/cms/theme` | Theme singleton (colors, logo, font, darkMode, `extra`) |
+| GET/POST, PUT/DELETE `/:id` | `/api/cms/specialties` | Specialty CMS (DELETE = soft deactivate) |
+| GET/POST, PUT/DELETE `/:id` | `/api/cms/doctors` | Doctor management (adds email/phone/bio/photoUrl; DELETE = deactivate) |
+| GET/POST, PUT/DELETE `/:id` | `/api/cms/staff` | Staff management (non-doctor personnel) |
+| GET/POST, PUT/DELETE `/:id` | `/api/cms/slot-presets` | TimeSlot CMS — named slot-duration presets |
+| GET/POST, PUT/DELETE `/:id` | `/api/cms/shifts` | Schedule CMS — named shifts (Morning/Afternoon) |
+| GET/POST, DELETE `/:id` | `/api/cms/shift-assignments?date=` | On-duty roster: shift → exactly one doctor OR staff, per date |
 
 ### Chat example
 

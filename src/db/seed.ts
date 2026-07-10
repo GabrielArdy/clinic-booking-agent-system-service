@@ -75,6 +75,17 @@ export function seed(db: DB): void {
     ],
   };
 
+  // CMS defaults (idempotent). Singleton settings rows are created by the
+  // migration; only fill the clinic name if still blank.
+  const insertPreset = db.prepare(
+    `INSERT INTO slot_presets (label, minutes)
+     SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM slot_presets WHERE label = ?)`,
+  );
+  const insertShift = db.prepare(
+    `INSERT INTO shifts (name, start_time, end_time)
+     SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM shifts WHERE name = ?)`,
+  );
+
   const run = db.transaction(() => {
     for (const [specialty, doctors] of Object.entries(data)) {
       insertSpecialty.run(specialty);
@@ -87,6 +98,23 @@ export function seed(db: DB): void {
         }
       }
     }
+
+    for (const [label, minutes] of [
+      ["Quick (15 min)", 15],
+      ["Standard (30 min)", 30],
+      ["Extended (60 min)", 60],
+    ] as [string, number][]) {
+      insertPreset.run(label, minutes, label);
+    }
+    for (const [name, start, end] of [
+      ["Morning", "08:00", "12:00"],
+      ["Afternoon", "13:00", "17:00"],
+    ] as [string, string, string][]) {
+      insertShift.run(name, start, end, name);
+    }
+    db.prepare(
+      "UPDATE clinic_settings SET name = 'Sandbox Clinic' WHERE id = 1 AND name = ''",
+    ).run();
   });
   run();
 }

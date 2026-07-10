@@ -1,6 +1,7 @@
 export interface Specialty {
   id: number;
   name: string;
+  description: string | null;
   active: boolean;
 }
 
@@ -10,6 +11,9 @@ export interface Doctor {
   specialtyId: number;
   specialtyName?: string;
   photoUrl: string | null;
+  email: string | null;
+  phone: string | null;
+  bio: string | null;
   active: boolean;
 }
 
@@ -52,6 +56,65 @@ export interface Booking {
   startTime: string;
   endTime: string;
   status: "active" | "cancelled";
+}
+
+// ---- CMS console entities ----
+
+export interface ClinicSetting {
+  name: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+  phone: string | null;
+  email: string | null;
+  permissionLetterUrl: string | null;
+  emblemUrl: string | null;
+  extra: Record<string, unknown>;
+  updatedAt: string;
+}
+
+export interface ThemeSetting {
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  logoUrl: string | null;
+  fontFamily: string;
+  darkMode: boolean;
+  extra: Record<string, unknown>;
+  updatedAt: string;
+}
+
+export interface Staff {
+  id: number;
+  fullName: string;
+  role: string;
+  email: string | null;
+  phone: string | null;
+  photoUrl: string | null;
+  active: boolean;
+}
+
+export interface SlotPreset {
+  id: number;
+  label: string;
+  minutes: number;
+  active: boolean;
+}
+
+export interface Shift {
+  id: number;
+  name: string;
+  startTime: string; // 'HH:MM'
+  endTime: string;
+  active: boolean;
+}
+
+export interface ShiftAssignment {
+  id: number;
+  shiftId: number;
+  doctorId: number | null;
+  staffId: number | null;
+  date: string; // 'YYYY-MM-DD'
 }
 
 export class DomainError extends Error {
