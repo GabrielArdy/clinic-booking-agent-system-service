@@ -1,20 +1,20 @@
-CREATE TABLE specialties (
+CREATE TABLE IF NOT EXISTS specialties (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     active BOOLEAN NOT NULL DEFAULT true
 );
 
-CREATE TABLE doctors (
+CREATE TABLE IF NOT EXISTS doctors (
     id SERIAL PRIMARY KEY,
     full_name TEXT NOT NULL,
     specialty_id INTEGER NOT NULL REFERENCES specialties(id),
     active BOOLEAN NOT NULL DEFAULT true
 );
 
-CREATE INDEX idx_doctors_specialty ON doctors(specialty_id);
+CREATE INDEX IF NOT EXISTS idx_doctors_specialty ON doctors(specialty_id);
 
 -- Recurring weekly availability. weekday: 0 = Sunday .. 6 = Saturday.
-CREATE TABLE doctor_schedule_rules (
+CREATE TABLE IF NOT EXISTS doctor_schedule_rules (
     id SERIAL PRIMARY KEY,
     doctor_id INTEGER NOT NULL REFERENCES doctors(id),
     weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
@@ -23,10 +23,10 @@ CREATE TABLE doctor_schedule_rules (
     slot_minutes INTEGER NOT NULL DEFAULT 30 CHECK (slot_minutes > 0)
 );
 
-CREATE INDEX idx_schedule_rules_doctor ON doctor_schedule_rules(doctor_id, weekday);
+CREATE INDEX IF NOT EXISTS idx_schedule_rules_doctor ON doctor_schedule_rules(doctor_id, weekday);
 
 -- Date-specific unavailability. NULL start/end = whole day blocked.
-CREATE TABLE doctor_schedule_exceptions (
+CREATE TABLE IF NOT EXISTS doctor_schedule_exceptions (
     id SERIAL PRIMARY KEY,
     doctor_id INTEGER NOT NULL REFERENCES doctors(id),
     date TEXT NOT NULL,
@@ -35,16 +35,16 @@ CREATE TABLE doctor_schedule_exceptions (
     reason TEXT
 );
 
-CREATE INDEX idx_schedule_exceptions_doctor_date ON doctor_schedule_exceptions(doctor_id, date);
+CREATE INDEX IF NOT EXISTS idx_schedule_exceptions_doctor_date ON doctor_schedule_exceptions(doctor_id, date);
 
-CREATE TABLE patients (
+CREATE TABLE IF NOT EXISTS patients (
     id SERIAL PRIMARY KEY,
     full_name TEXT NOT NULL,
     phone TEXT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE bookings (
+CREATE TABLE IF NOT EXISTS bookings (
     id SERIAL PRIMARY KEY,
     reference TEXT NOT NULL UNIQUE,
     patient_id INTEGER NOT NULL REFERENCES patients(id),
@@ -58,14 +58,14 @@ CREATE TABLE bookings (
 );
 
 -- Anti-double-booking: only one ACTIVE booking per doctor/date/start slot.
-CREATE UNIQUE INDEX idx_bookings_unique_active_slot
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_unique_active_slot
     ON bookings(doctor_id, date, start_time)
     WHERE status = 'active';
 
-CREATE INDEX idx_bookings_patient ON bookings(patient_id);
-CREATE INDEX idx_bookings_doctor_date ON bookings(doctor_id, date);
+CREATE INDEX IF NOT EXISTS idx_bookings_patient ON bookings(patient_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_doctor_date ON bookings(doctor_id, date);
 
-CREATE TABLE conversation_sessions (
+CREATE TABLE IF NOT EXISTS conversation_sessions (
     id TEXT PRIMARY KEY,
     stage TEXT NOT NULL,
     state_json TEXT NOT NULL DEFAULT '{}',
@@ -73,7 +73,7 @@ CREATE TABLE conversation_sessions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE conversation_messages (
+CREATE TABLE IF NOT EXISTS conversation_messages (
     id SERIAL PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES conversation_sessions(id),
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
@@ -81,13 +81,13 @@ CREATE TABLE conversation_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_messages_session ON conversation_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON conversation_messages(session_id);
 
-CREATE TABLE audit_events (
+CREATE TABLE IF NOT EXISTS audit_events (
     id SERIAL PRIMARY KEY,
     event_type TEXT NOT NULL,
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_audit_type ON audit_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);

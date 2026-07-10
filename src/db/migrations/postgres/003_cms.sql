@@ -1,6 +1,7 @@
 -- CMS console tables (postgres). Mirrors migrations/sqlite/003_cms.sql.
+-- Idempotent so a re-run after a partially-applied migration is a no-op.
 
-CREATE TABLE clinic_settings (
+CREATE TABLE IF NOT EXISTS clinic_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     name TEXT NOT NULL DEFAULT '',
     address TEXT NOT NULL DEFAULT '',
@@ -13,9 +14,9 @@ CREATE TABLE clinic_settings (
     extra_json TEXT NOT NULL DEFAULT '{}',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO clinic_settings (id) VALUES (1);
+INSERT INTO clinic_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
-CREATE TABLE theme_settings (
+CREATE TABLE IF NOT EXISTS theme_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     primary_color TEXT NOT NULL DEFAULT '#2563eb',
     secondary_color TEXT NOT NULL DEFAULT '#1e293b',
@@ -26,9 +27,9 @@ CREATE TABLE theme_settings (
     extra_json TEXT NOT NULL DEFAULT '{}',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO theme_settings (id) VALUES (1);
+INSERT INTO theme_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
-CREATE TABLE staff (
+CREATE TABLE IF NOT EXISTS staff (
     id SERIAL PRIMARY KEY,
     full_name TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'staff',
@@ -39,14 +40,14 @@ CREATE TABLE staff (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE slot_presets (
+CREATE TABLE IF NOT EXISTS slot_presets (
     id SERIAL PRIMARY KEY,
     label TEXT NOT NULL,
     minutes INTEGER NOT NULL CHECK (minutes > 0),
     active BOOLEAN NOT NULL DEFAULT true
 );
 
-CREATE TABLE shifts (
+CREATE TABLE IF NOT EXISTS shifts (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     start_time TEXT NOT NULL,
@@ -54,7 +55,7 @@ CREATE TABLE shifts (
     active BOOLEAN NOT NULL DEFAULT true
 );
 
-CREATE TABLE shift_assignments (
+CREATE TABLE IF NOT EXISTS shift_assignments (
     id SERIAL PRIMARY KEY,
     shift_id INTEGER NOT NULL REFERENCES shifts(id),
     doctor_id INTEGER REFERENCES doctors(id),
@@ -63,10 +64,10 @@ CREATE TABLE shift_assignments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK ((doctor_id IS NOT NULL) <> (staff_id IS NOT NULL))
 );
-CREATE INDEX idx_shift_assignments_date ON shift_assignments(date);
-CREATE INDEX idx_shift_assignments_shift ON shift_assignments(shift_id);
+CREATE INDEX IF NOT EXISTS idx_shift_assignments_date ON shift_assignments(date);
+CREATE INDEX IF NOT EXISTS idx_shift_assignments_shift ON shift_assignments(shift_id);
 
-ALTER TABLE specialties ADD COLUMN description TEXT;
-ALTER TABLE doctors ADD COLUMN email TEXT;
-ALTER TABLE doctors ADD COLUMN phone TEXT;
-ALTER TABLE doctors ADD COLUMN bio TEXT;
+ALTER TABLE specialties ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE doctors ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE doctors ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE doctors ADD COLUMN IF NOT EXISTS bio TEXT;
