@@ -5,8 +5,9 @@ import { logger } from "./logging/logger.js";
 import { BookingService } from "./services/booking-service.js";
 import { SessionRepository } from "./repositories/session-repository.js";
 import { ConversationRouter } from "./conversation/router.js";
-import { DisabledAIProvider } from "./ai/provider.js";
+import { DisabledAIProvider, type AIProviderAdapter } from "./ai/provider.js";
 import { OpenRouterAdapter } from "./ai/openrouter-adapter.js";
+import { AgentRouterAdapter } from "./ai/agentrouter-adapter.js";
 import { createApp } from "./api/app.js";
 
 const config = loadConfig();
@@ -15,13 +16,18 @@ runMigrations(db);
 
 const booking = new BookingService(db);
 const sessions = new SessionRepository(db);
-const ai = config.ai.enabled
-  ? new OpenRouterAdapter({
-      apiKey: config.ai.apiKey,
-      model: config.ai.model,
-      baseUrl: config.ai.baseUrl,
-    })
-  : new DisabledAIProvider();
+function buildAI(): AIProviderAdapter {
+  if (!config.ai.enabled) return new DisabledAIProvider();
+  const opts = {
+    apiKey: config.ai.apiKey,
+    model: config.ai.model,
+    baseUrl: config.ai.baseUrl,
+  };
+  return config.ai.provider === "agentrouter"
+    ? new AgentRouterAdapter(opts)
+    : new OpenRouterAdapter(opts);
+}
+const ai = buildAI();
 const conversation = new ConversationRouter(booking, sessions, ai);
 
 const app = createApp({ config, conversation, booking });
@@ -32,6 +38,7 @@ const server = app.listen(config.port, () => {
     port: config.port,
     database: config.databasePath,
     aiEnabled: config.ai.enabled,
+    aiProvider: config.ai.enabled ? config.ai.provider : "none",
   });
 });
 

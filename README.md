@@ -2,13 +2,13 @@
 
 Conversational clinic appointment booking backend implementing [SPEC-1](./spec_1_clinic_booking_agent.md).
 
-Node.js + TypeScript, Express, SQLite (better-sqlite3, raw SQL — no ORM), deterministic conversation state machine, optional AI assistance via OpenRouter.
+Node.js + TypeScript, Express, SQLite (better-sqlite3, raw SQL — no ORM), deterministic conversation state machine, optional AI assistance via OpenRouter or AgentRouter (`AI_PROVIDER`).
 
 ## Design
 
 - **Deterministic router owns the flow.** The booking path is an explicit state machine (`greeting → select_specialty → select_doctor → select_date → select_slot → collect_patient_name → collect_patient_phone → confirm_booking → booking_complete`). The AI adapter only helps interpret free text; it never decides booking validity.
 - **Anti-double-booking** via a partial unique index on `bookings(doctor_id, date, start_time) WHERE status = 'active'`, plus a re-check inside the booking transaction.
-- **AI is optional.** Without `OPENROUTER_API_KEY` the system runs fully deterministic (numbered options, keyword matching). With it, free-form messages are classified into a constrained intent taxonomy and schema-validated before use.
+- **AI is optional and pluggable.** Without an API key the system runs fully deterministic (numbered options, keyword matching). With it, free-form messages are classified into a constrained intent taxonomy and schema-validated before use. Provider selected by `AI_PROVIDER` (`openrouter` default, or `agentrouter` — OpenAI-compatible, see https://docs.agentrouter.org/); both implement the same `AIProviderAdapter` interface.
 - **Sessions persist in SQLite** — conversation state survives refresh/reconnect.
 
 ## Setup
