@@ -8,6 +8,7 @@ import { ScheduleRepository } from "../repositories/schedule-repository.js";
 const createDoctorSchema = z.object({
   fullName: z.string().min(2).max(100),
   specialtyId: z.number().int().positive(),
+  photoUrl: z.string().url().max(500).nullable().default(null),
 });
 
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -51,6 +52,7 @@ export function adminRouter(config: AppConfig, booking: BookingService): Router 
       const doctor = new DoctorRepository(req.app.get("db")).create(
         input.fullName,
         input.specialtyId,
+        input.photoUrl,
       );
       res.status(201).json({ doctor });
     } catch (err) {

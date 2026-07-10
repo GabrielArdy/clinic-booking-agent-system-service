@@ -9,6 +9,7 @@ export interface Doctor {
   fullName: string;
   specialtyId: number;
   specialtyName?: string;
+  photoUrl: string | null;
   active: boolean;
 }
 

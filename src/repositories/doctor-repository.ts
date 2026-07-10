@@ -6,6 +6,7 @@ interface Row {
   full_name: string;
   specialty_id: number;
   specialty_name: string;
+  photo_url: string | null;
   active: number;
 }
 
@@ -15,12 +16,13 @@ function toDoctor(row: Row): Doctor {
     fullName: row.full_name,
     specialtyId: row.specialty_id,
     specialtyName: row.specialty_name,
+    photoUrl: row.photo_url,
     active: row.active === 1,
   };
 }
 
 const BASE_SELECT = `
-  SELECT d.id, d.full_name, d.specialty_id, d.active, s.name AS specialty_name
+  SELECT d.id, d.full_name, d.specialty_id, d.active, d.photo_url, s.name AS specialty_name
   FROM doctors d
   JOIN specialties s ON s.id = d.specialty_id
 `;
@@ -45,10 +47,10 @@ export class DoctorRepository {
     return row ? toDoctor(row) : null;
   }
 
-  create(fullName: string, specialtyId: number): Doctor {
+  create(fullName: string, specialtyId: number, photoUrl: string | null = null): Doctor {
     const result = this.db
-      .prepare("INSERT INTO doctors (full_name, specialty_id) VALUES (?, ?)")
-      .run(fullName, specialtyId);
+      .prepare("INSERT INTO doctors (full_name, specialty_id, photo_url) VALUES (?, ?, ?)")
+      .run(fullName, specialtyId, photoUrl);
     return this.findById(Number(result.lastInsertRowid))!;
   }
 }

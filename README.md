@@ -28,7 +28,7 @@ npm run dev            # start on :3000
 | POST | `/api/chat` | `{sessionId?, message}` → assistant turn (message, quickReplies, stage, collectedEntities) |
 | GET | `/api/chat/:sessionId/history` | Conversation transcript |
 | POST | `/api/booking/cancel` | `{reference, phone}` — phone must match booking |
-| GET/POST | `/api/admin/doctors` | List / create doctors (header `x-admin-token`) |
+| GET/POST | `/api/admin/doctors` | List / create doctors (header `x-admin-token`). Create body: `{fullName, specialtyId, photoUrl?}`. Doctor objects include `photoUrl` (nullable). |
 | GET/POST | `/api/admin/schedules` | List / create weekly schedule rules |
 | POST | `/api/admin/schedule-exceptions` | Block a date or time range |
 | GET | `/api/admin/bookings?doctorId=&date=` | Bookings by doctor and date |
