@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/
+*.db
+*.db-journal
+.env
+.wolf/
+.claude/
+CLAUDE.md
+API_CONTRACT.md
