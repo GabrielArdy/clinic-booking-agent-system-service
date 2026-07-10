@@ -35,6 +35,15 @@ export function createApp(params: {
 }): express.Express {
   const { config, conversation, booking, repos } = params;
   const app = express();
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-admin-token");
+    next();
+  });
+  app.options("*", (_req, res) => {
+    res.sendStatus(204);
+  });
   app.use(express.json({ limit: "32kb" }));
 
   // Minimal fixed-window rate limit for the public chat endpoint.
@@ -67,6 +76,11 @@ export function createApp(params: {
     } catch (err) {
       next(err);
     }
+  });
+
+  app.all("/api/chat", (_req, res) => {
+    res.setHeader("Allow", "POST, OPTIONS");
+    res.status(405).json({ error: "Method not allowed" });
   });
 
   app.get("/api/chat/:sessionId/history", async (req, res, next) => {
