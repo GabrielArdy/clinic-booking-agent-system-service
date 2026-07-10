@@ -35,9 +35,11 @@ COPY --from=builder /app/dist ./dist
 COPY package.json ./
 
 # Writable data dir for the SQLite file; own it as the non-root node user.
+# NOTE: no Dockerfile VOLUME — Railway ignores it. For sqlite persistence attach
+# a Railway Volume mounted at /app/data (dashboard). For DB_TYPE=postgres this
+# dir is unused; point DATABASE_URL at a Railway Postgres plugin instead.
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
-VOLUME ["/app/data"]
 
 EXPOSE 3000
 
