@@ -1,15 +1,14 @@
-import Database from "better-sqlite3";
-import fs from "node:fs";
-import path from "node:path";
+import type { AppConfig } from "../config.js";
+import type { Database } from "./executor.js";
+import { SqliteDatabase } from "./sqlite.js";
+import { PgDatabase } from "./postgres.js";
 
-export type DB = Database.Database;
+export type { Database } from "./executor.js";
 
-export function openDatabase(databasePath: string): DB {
-  if (databasePath !== ":memory:") {
-    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+/** Opens the configured database (sqlite or postgres). */
+export function openDatabase(config: AppConfig): Database {
+  if (config.dbType === "postgres") {
+    return PgDatabase.open(config.postgres);
   }
-  const db = new Database(databasePath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  return db;
+  return SqliteDatabase.open(config.databasePath);
 }

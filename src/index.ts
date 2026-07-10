@@ -2,8 +2,8 @@ import { loadConfig } from "./config.js";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { logger } from "./logging/logger.js";
+import { buildRepositories } from "./repositories/factory.js";
 import { BookingService } from "./services/booking-service.js";
-import { SessionRepository } from "./repositories/session-repository.js";
 import { ConversationRouter } from "./conversation/router.js";
 import { DisabledAIProvider, type AIProviderAdapter } from "./ai/provider.js";
 import { OpenRouterAdapter } from "./ai/openrouter-adapter.js";
@@ -11,11 +11,12 @@ import { AgentRouterAdapter } from "./ai/agentrouter-adapter.js";
 import { createApp } from "./api/app.js";
 
 const config = loadConfig();
-const db = openDatabase(config.databasePath);
-runMigrations(db);
+const db = openDatabase(config);
+await runMigrations(db);
 
-const booking = new BookingService(db);
-const sessions = new SessionRepository(db);
+const { repos, makeRepos } = buildRepositories(db);
+const booking = new BookingService(db, makeRepos);
+
 function buildAI(): AIProviderAdapter {
   if (!config.ai.enabled) return new DisabledAIProvider();
   const opts = {
@@ -28,15 +29,14 @@ function buildAI(): AIProviderAdapter {
     : new OpenRouterAdapter(opts);
 }
 const ai = buildAI();
-const conversation = new ConversationRouter(booking, sessions, ai);
+const conversation = new ConversationRouter(booking, repos.sessions, ai);
 
-const app = createApp({ config, conversation, booking });
-app.set("db", db);
+const app = createApp({ config, conversation, booking, repos });
 
 const server = app.listen(config.port, () => {
   logger.info("server started", {
     port: config.port,
-    database: config.databasePath,
+    dbType: config.dbType,
     aiEnabled: config.ai.enabled,
     aiProvider: config.ai.enabled ? config.ai.provider : "none",
   });
@@ -45,8 +45,7 @@ const server = app.listen(config.port, () => {
 function shutdown(): void {
   logger.info("shutting down");
   server.close(() => {
-    db.close();
-    process.exit(0);
+    void db.close().finally(() => process.exit(0));
   });
 }
 

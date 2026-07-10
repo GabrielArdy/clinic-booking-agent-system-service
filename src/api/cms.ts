@@ -1,24 +1,13 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
-import type { DB } from "../db/connection.js";
 import { DomainError } from "../domain/types.js";
-import { ClinicSettingsRepository } from "../repositories/clinic-settings-repository.js";
-import { ThemeRepository } from "../repositories/theme-repository.js";
-import { SpecialtyRepository } from "../repositories/specialty-repository.js";
-import { DoctorRepository } from "../repositories/doctor-repository.js";
-import { StaffRepository } from "../repositories/staff-repository.js";
-import { SlotPresetRepository } from "../repositories/slot-preset-repository.js";
-import { ShiftRepository } from "../repositories/shift-repository.js";
+import type { Repositories } from "../repositories/ports.js";
 
 const hex = /^#[0-9a-fA-F]{6}$/;
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const idParam = z.coerce.number().int().positive();
-
-function db(req: Request): DB {
-  return req.app.get("db") as DB;
-}
 
 function notFound(entity: string): never {
   throw new DomainError("NOT_FOUND", `${entity} not found`);
@@ -124,7 +113,7 @@ const assignmentCreate = z
     message: "Provide exactly one of doctorId or staffId",
   });
 
-export function cmsRouter(config: AppConfig): Router {
+export function cmsRouter(config: AppConfig, repos: Repositories): Router {
   const router = Router();
 
   // Reuses the admin secret, mounted separately at /api/cms.
@@ -137,95 +126,104 @@ export function cmsRouter(config: AppConfig): Router {
   });
 
   // ---- Clinic Setting (singleton) ----
-  router.get("/clinic", (req, res) => {
-    res.json({ clinic: new ClinicSettingsRepository(db(req)).get() });
-  });
-  router.put("/clinic", (req, res, next) => {
+  router.get("/clinic", async (_req, res, next) => {
     try {
-      const input = clinicSchema.parse(req.body);
-      res.json({ clinic: new ClinicSettingsRepository(db(req)).update(input) });
+      res.json({ clinic: await repos.clinic.get() });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/clinic", async (req, res, next) => {
+    try {
+      res.json({ clinic: await repos.clinic.update(clinicSchema.parse(req.body)) });
     } catch (err) {
       next(err);
     }
   });
 
   // ---- Theme (singleton) ----
-  router.get("/theme", (req, res) => {
-    res.json({ theme: new ThemeRepository(db(req)).get() });
-  });
-  router.put("/theme", (req, res, next) => {
+  router.get("/theme", async (_req, res, next) => {
     try {
-      const input = themeSchema.parse(req.body);
-      res.json({ theme: new ThemeRepository(db(req)).update(input) });
+      res.json({ theme: await repos.theme.get() });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/theme", async (req, res, next) => {
+    try {
+      res.json({ theme: await repos.theme.update(themeSchema.parse(req.body)) });
     } catch (err) {
       next(err);
     }
   });
 
   // ---- Specialties ----
-  router.get("/specialties", (req, res) => {
-    res.json({ specialties: new SpecialtyRepository(db(req)).listAll() });
-  });
-  router.post("/specialties", (req, res, next) => {
+  router.get("/specialties", async (_req, res, next) => {
     try {
-      const input = specialtyCreate.parse(req.body);
-      const specialty = new SpecialtyRepository(db(req)).create(input.name, input.description);
-      res.status(201).json({ specialty });
+      res.json({ specialties: await repos.specialties.listAll() });
     } catch (err) {
       next(err);
     }
   });
-  router.put("/specialties/:id", (req, res, next) => {
+  router.post("/specialties", async (req, res, next) => {
+    try {
+      const input = specialtyCreate.parse(req.body);
+      res.status(201).json({ specialty: await repos.specialties.create(input.name, input.description) });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/specialties/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      const input = specialtyUpdate.parse(req.body);
-      const specialty = new SpecialtyRepository(db(req)).update(id, input);
+      const specialty = await repos.specialties.update(id, specialtyUpdate.parse(req.body));
       if (!specialty) notFound("Specialty");
       res.json({ specialty });
     } catch (err) {
       next(err);
     }
   });
-  router.delete("/specialties/:id", (req, res, next) => {
+  router.delete("/specialties/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      if (!new SpecialtyRepository(db(req)).deactivate(id)) notFound("Specialty");
+      if (!(await repos.specialties.deactivate(id))) notFound("Specialty");
       res.json({ id, active: false });
     } catch (err) {
       next(err);
     }
   });
 
-  // ---- Doctors (+ Staff = Doctor and Staff Management) ----
-  router.get("/doctors", (req, res) => {
-    res.json({ doctors: new DoctorRepository(db(req)).listAll() });
-  });
-  router.post("/doctors", (req, res, next) => {
+  // ---- Doctors (Doctor & Staff Management) ----
+  router.get("/doctors", async (_req, res, next) => {
     try {
-      const input = doctorCreate.parse(req.body);
-      const specialties = new SpecialtyRepository(db(req));
-      if (!specialties.findById(input.specialtyId)) notFound("Specialty");
-      const doctor = new DoctorRepository(db(req)).create(input);
-      res.status(201).json({ doctor });
+      res.json({ doctors: await repos.doctors.listAll() });
     } catch (err) {
       next(err);
     }
   });
-  router.put("/doctors/:id", (req, res, next) => {
+  router.post("/doctors", async (req, res, next) => {
+    try {
+      const input = doctorCreate.parse(req.body);
+      if (!(await repos.specialties.findById(input.specialtyId))) notFound("Specialty");
+      res.status(201).json({ doctor: await repos.doctors.create(input) });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/doctors/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      const input = doctorUpdate.parse(req.body);
-      const doctor = new DoctorRepository(db(req)).update(id, input);
+      const doctor = await repos.doctors.update(id, doctorUpdate.parse(req.body));
       if (!doctor) notFound("Doctor");
       res.json({ doctor });
     } catch (err) {
       next(err);
     }
   });
-  router.delete("/doctors/:id", (req, res, next) => {
+  router.delete("/doctors/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      if (!new DoctorRepository(db(req)).deactivate(id)) notFound("Doctor");
+      if (!(await repos.doctors.deactivate(id))) notFound("Doctor");
       res.json({ id, active: false });
     } catch (err) {
       next(err);
@@ -233,32 +231,34 @@ export function cmsRouter(config: AppConfig): Router {
   });
 
   // ---- Staff ----
-  router.get("/staff", (req, res) => {
-    res.json({ staff: new StaffRepository(db(req)).listAll() });
-  });
-  router.post("/staff", (req, res, next) => {
+  router.get("/staff", async (_req, res, next) => {
     try {
-      const input = staffCreate.parse(req.body);
-      res.status(201).json({ staff: new StaffRepository(db(req)).create(input) });
+      res.json({ staff: await repos.staff.listAll() });
     } catch (err) {
       next(err);
     }
   });
-  router.put("/staff/:id", (req, res, next) => {
+  router.post("/staff", async (req, res, next) => {
+    try {
+      res.status(201).json({ staff: await repos.staff.create(staffCreate.parse(req.body)) });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/staff/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      const input = staffUpdate.parse(req.body);
-      const staff = new StaffRepository(db(req)).update(id, input);
+      const staff = await repos.staff.update(id, staffUpdate.parse(req.body));
       if (!staff) notFound("Staff");
       res.json({ staff });
     } catch (err) {
       next(err);
     }
   });
-  router.delete("/staff/:id", (req, res, next) => {
+  router.delete("/staff/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      if (!new StaffRepository(db(req)).deactivate(id)) notFound("Staff");
+      if (!(await repos.staff.deactivate(id))) notFound("Staff");
       res.json({ id, active: false });
     } catch (err) {
       next(err);
@@ -266,33 +266,35 @@ export function cmsRouter(config: AppConfig): Router {
   });
 
   // ---- Slot presets (TimeSlot CMS) ----
-  router.get("/slot-presets", (req, res) => {
-    res.json({ slotPresets: new SlotPresetRepository(db(req)).listAll() });
-  });
-  router.post("/slot-presets", (req, res, next) => {
+  router.get("/slot-presets", async (_req, res, next) => {
     try {
-      const input = presetCreate.parse(req.body);
-      const preset = new SlotPresetRepository(db(req)).create(input.label, input.minutes);
-      res.status(201).json({ slotPreset: preset });
+      res.json({ slotPresets: await repos.slotPresets.listAll() });
     } catch (err) {
       next(err);
     }
   });
-  router.put("/slot-presets/:id", (req, res, next) => {
+  router.post("/slot-presets", async (req, res, next) => {
+    try {
+      const input = presetCreate.parse(req.body);
+      res.status(201).json({ slotPreset: await repos.slotPresets.create(input.label, input.minutes) });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/slot-presets/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      const input = presetUpdate.parse(req.body);
-      const preset = new SlotPresetRepository(db(req)).update(id, input);
+      const preset = await repos.slotPresets.update(id, presetUpdate.parse(req.body));
       if (!preset) notFound("Slot preset");
       res.json({ slotPreset: preset });
     } catch (err) {
       next(err);
     }
   });
-  router.delete("/slot-presets/:id", (req, res, next) => {
+  router.delete("/slot-presets/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      if (!new SlotPresetRepository(db(req)).delete(id)) notFound("Slot preset");
+      if (!(await repos.slotPresets.delete(id))) notFound("Slot preset");
       res.json({ id, deleted: true });
     } catch (err) {
       next(err);
@@ -300,73 +302,68 @@ export function cmsRouter(config: AppConfig): Router {
   });
 
   // ---- Shifts + on-duty assignments (Schedule CMS) ----
-  router.get("/shifts", (req, res) => {
-    res.json({ shifts: new ShiftRepository(db(req)).listShifts() });
-  });
-  router.post("/shifts", (req, res, next) => {
+  router.get("/shifts", async (_req, res, next) => {
     try {
-      const input = shiftCreate.parse(req.body);
-      const shift = new ShiftRepository(db(req)).createShift(
-        input.name,
-        input.startTime,
-        input.endTime,
-      );
-      res.status(201).json({ shift });
+      res.json({ shifts: await repos.shifts.listShifts() });
     } catch (err) {
       next(err);
     }
   });
-  router.put("/shifts/:id", (req, res, next) => {
+  router.post("/shifts", async (req, res, next) => {
+    try {
+      const input = shiftCreate.parse(req.body);
+      res.status(201).json({ shift: await repos.shifts.createShift(input.name, input.startTime, input.endTime) });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/shifts/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      const input = shiftUpdate.parse(req.body);
-      const shift = new ShiftRepository(db(req)).updateShift(id, input);
+      const shift = await repos.shifts.updateShift(id, shiftUpdate.parse(req.body));
       if (!shift) notFound("Shift");
       res.json({ shift });
     } catch (err) {
       next(err);
     }
   });
-  router.delete("/shifts/:id", (req, res, next) => {
+  router.delete("/shifts/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      if (!new ShiftRepository(db(req)).deleteShift(id)) notFound("Shift");
+      if (!(await repos.shifts.deleteShift(id))) notFound("Shift");
       res.json({ id, deleted: true });
     } catch (err) {
       next(err);
     }
   });
 
-  router.get("/shift-assignments", (req, res, next) => {
+  router.get("/shift-assignments", async (req, res, next) => {
     try {
-      const date = req.query.date
-        ? z.string().regex(datePattern).parse(req.query.date)
-        : undefined;
-      res.json({ assignments: new ShiftRepository(db(req)).listAssignments(date) });
+      const date = req.query.date ? z.string().regex(datePattern).parse(req.query.date) : undefined;
+      res.json({ assignments: await repos.shifts.listAssignments(date) });
     } catch (err) {
       next(err);
     }
   });
-  router.post("/shift-assignments", (req, res, next) => {
+  router.post("/shift-assignments", async (req, res, next) => {
     try {
       const input = assignmentCreate.parse(req.body);
-      const repo = new ShiftRepository(db(req));
-      if (!repo.findShift(input.shiftId)) notFound("Shift");
-      if (input.doctorId !== null && !new DoctorRepository(db(req)).findById(input.doctorId)) {
+      if (!(await repos.shifts.findShift(input.shiftId))) notFound("Shift");
+      if (input.doctorId !== null && !(await repos.doctors.findById(input.doctorId))) {
         notFound("Doctor");
       }
-      if (input.staffId !== null && !new StaffRepository(db(req)).findById(input.staffId)) {
+      if (input.staffId !== null && !(await repos.staff.findById(input.staffId))) {
         notFound("Staff");
       }
-      res.status(201).json({ assignment: repo.createAssignment(input) });
+      res.status(201).json({ assignment: await repos.shifts.createAssignment(input) });
     } catch (err) {
       next(err);
     }
   });
-  router.delete("/shift-assignments/:id", (req, res, next) => {
+  router.delete("/shift-assignments/:id", async (req, res, next) => {
     try {
       const id = idParam.parse(req.params.id);
-      if (!new ShiftRepository(db(req)).deleteAssignment(id)) notFound("Assignment");
+      if (!(await repos.shifts.deleteAssignment(id))) notFound("Assignment");
       res.json({ id, deleted: true });
     } catch (err) {
       next(err);

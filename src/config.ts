@@ -1,10 +1,14 @@
 import "dotenv/config";
+import type { DbType } from "./db/executor.js";
+import type { PgConfig } from "./db/postgres.js";
 
 export type AIProviderName = "openrouter" | "agentrouter";
 
 export interface AppConfig {
   port: number;
-  databasePath: string;
+  dbType: DbType;
+  databasePath: string; // sqlite only
+  postgres: PgConfig; // postgres only
   adminToken: string;
   ai: {
     enabled: boolean;
@@ -16,6 +20,8 @@ export interface AppConfig {
 }
 
 export function loadConfig(): AppConfig {
+  const rawDbType = (process.env.DB_TYPE ?? "sqlite").toLowerCase();
+  const dbType: DbType = rawDbType === "postgres" || rawDbType === "postgresql" ? "postgres" : "sqlite";
   const rawProvider = (process.env.AI_PROVIDER ?? "openrouter").toLowerCase();
   const provider: AIProviderName = rawProvider === "agentrouter" ? "agentrouter" : "openrouter";
 
@@ -34,7 +40,17 @@ export function loadConfig(): AppConfig {
 
   return {
     port: Number(process.env.PORT ?? 3000),
+    dbType,
     databasePath: process.env.DATABASE_PATH ?? "data/clinic.db",
+    postgres: {
+      connectionString: process.env.DATABASE_URL || undefined,
+      host: process.env.PGHOST ?? "localhost",
+      port: Number(process.env.PGPORT ?? 5432),
+      user: process.env.PGUSER ?? "postgres",
+      password: process.env.PGPASSWORD ?? "postgres",
+      database: process.env.PGDATABASE ?? "clinic",
+      ssl: (process.env.PGSSL ?? "").toLowerCase() === "true",
+    },
     adminToken: process.env.ADMIN_TOKEN ?? "",
     ai: {
       enabled: ai.apiKey.length > 0,

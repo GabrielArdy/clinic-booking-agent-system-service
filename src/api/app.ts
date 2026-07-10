@@ -5,6 +5,7 @@ import { DomainError } from "../domain/types.js";
 import { logger } from "../logging/logger.js";
 import type { ConversationRouter } from "../conversation/router.js";
 import type { BookingService } from "../services/booking-service.js";
+import type { Repositories } from "../repositories/ports.js";
 import { adminRouter } from "./admin.js";
 import { cmsRouter } from "./cms.js";
 
@@ -30,8 +31,9 @@ export function createApp(params: {
   config: AppConfig;
   conversation: ConversationRouter;
   booking: BookingService;
+  repos: Repositories;
 }): express.Express {
-  const { config, conversation, booking } = params;
+  const { config, conversation, booking, repos } = params;
   const app = express();
   app.use(express.json({ limit: "32kb" }));
 
@@ -67,22 +69,26 @@ export function createApp(params: {
     }
   });
 
-  app.get("/api/chat/:sessionId/history", (req, res) => {
-    res.json({ messages: conversation.getHistory(req.params.sessionId) });
+  app.get("/api/chat/:sessionId/history", async (req, res, next) => {
+    try {
+      res.json({ messages: await conversation.getHistory(req.params.sessionId) });
+    } catch (err) {
+      next(err);
+    }
   });
 
-  app.post("/api/booking/cancel", (req, res, next) => {
+  app.post("/api/booking/cancel", async (req, res, next) => {
     try {
       const input = cancelSchema.parse(req.body);
-      const booking_ = booking.cancelBooking(input.reference, input.phone);
+      const booking_ = await booking.cancelBooking(input.reference, input.phone);
       res.json({ reference: booking_.reference, status: booking_.status });
     } catch (err) {
       next(err);
     }
   });
 
-  app.use("/api/admin", adminRouter(config, booking));
-  app.use("/api/cms", cmsRouter(config));
+  app.use("/api/admin", adminRouter(config, booking, repos));
+  app.use("/api/cms", cmsRouter(config, repos));
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof z.ZodError) {

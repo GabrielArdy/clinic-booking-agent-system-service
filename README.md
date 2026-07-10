@@ -2,7 +2,16 @@
 
 Conversational clinic appointment booking backend implementing [SPEC-1](./spec_1_clinic_booking_agent.md).
 
-Node.js + TypeScript, Express, SQLite (better-sqlite3, raw SQL — no ORM), deterministic conversation state machine, optional AI assistance via OpenRouter or AgentRouter (`AI_PROVIDER`).
+Node.js + TypeScript, Express, pluggable database (SQLite via better-sqlite3, or PostgreSQL via pg — raw SQL, no ORM), deterministic conversation state machine, optional AI assistance via OpenRouter or AgentRouter (`AI_PROVIDER`).
+
+## Database backend
+
+Switch with `DB_TYPE` (`sqlite` default, or `postgres`). Both use raw SQL behind an async repository interface with two dialect-specific implementations (`src/repositories/sqlite/`, `src/repositories/postgres/`); migrations live in per-dialect folders (`src/db/migrations/<dbType>/`).
+
+- **sqlite** (dev / single-box): file at `DATABASE_PATH`. Needs a persistent disk (e.g. a Railway Volume) to survive deploys.
+- **postgres** (production / scalable): set `DB_TYPE=postgres` + `DATABASE_URL` (or `PG*` vars). Migrations run automatically at boot; seed once with `node dist/src/db/seed.js`.
+
+`docker compose up` runs the app against a Postgres 16 service. SQLite is planned for removal once Postgres is the default.
 
 ## Design
 

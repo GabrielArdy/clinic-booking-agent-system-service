@@ -1,0 +1,212 @@
+import type { Executor } from "../db/executor.js";
+import type {
+  Booking,
+  ClinicSetting,
+  Doctor,
+  Patient,
+  ScheduleException,
+  ScheduleRule,
+  Shift,
+  ShiftAssignment,
+  SlotPreset,
+  Specialty,
+  Staff,
+  ThemeSetting,
+} from "../domain/types.js";
+
+export interface SessionRecord {
+  id: string;
+  stage: string;
+  state: Record<string, unknown>;
+}
+
+export interface ChatMessage {
+  role: string;
+  content: string;
+  createdAt: string;
+}
+
+// ---- input types ----
+export interface CreateDoctorInput {
+  fullName: string;
+  specialtyId: number;
+  photoUrl?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  bio?: string | null;
+}
+export interface UpdateDoctorInput {
+  fullName?: string;
+  specialtyId?: number;
+  photoUrl?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  bio?: string | null;
+  active?: boolean;
+}
+export interface UpdateSpecialtyInput {
+  name?: string;
+  description?: string | null;
+  active?: boolean;
+}
+export interface CreateStaffInput {
+  fullName: string;
+  role?: string;
+  email?: string | null;
+  phone?: string | null;
+  photoUrl?: string | null;
+}
+export interface UpdateStaffInput {
+  fullName?: string;
+  role?: string;
+  email?: string | null;
+  phone?: string | null;
+  photoUrl?: string | null;
+  active?: boolean;
+}
+export interface UpdateClinicInput {
+  name?: string;
+  address?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  phone?: string | null;
+  email?: string | null;
+  permissionLetterUrl?: string | null;
+  emblemUrl?: string | null;
+  extra?: Record<string, unknown>;
+}
+export interface UpdateThemeInput {
+  primaryColor?: string;
+  secondaryColor?: string;
+  accentColor?: string;
+  logoUrl?: string | null;
+  fontFamily?: string;
+  darkMode?: boolean;
+  extra?: Record<string, unknown>;
+}
+export interface UpdateShiftInput {
+  name?: string;
+  startTime?: string;
+  endTime?: string;
+  active?: boolean;
+}
+export interface CreateAssignmentInput {
+  shiftId: number;
+  doctorId?: number | null;
+  staffId?: number | null;
+  date: string;
+}
+
+// ---- repository interfaces ----
+export interface SpecialtyRepo {
+  listActive(): Promise<Specialty[]>;
+  listAll(): Promise<Specialty[]>;
+  findById(id: number): Promise<Specialty | null>;
+  create(name: string, description?: string | null): Promise<Specialty>;
+  update(id: number, patch: UpdateSpecialtyInput): Promise<Specialty | null>;
+  deactivate(id: number): Promise<boolean>;
+}
+
+export interface DoctorRepo {
+  listActiveBySpecialty(specialtyId: number): Promise<Doctor[]>;
+  listAll(): Promise<Doctor[]>;
+  findById(id: number): Promise<Doctor | null>;
+  create(input: CreateDoctorInput): Promise<Doctor>;
+  update(id: number, patch: UpdateDoctorInput): Promise<Doctor | null>;
+  deactivate(id: number): Promise<boolean>;
+}
+
+export interface ScheduleRepo {
+  rulesForDoctorWeekday(doctorId: number, weekday: number): Promise<ScheduleRule[]>;
+  rulesForDoctor(doctorId: number): Promise<ScheduleRule[]>;
+  exceptionsForDoctorDate(doctorId: number, date: string): Promise<ScheduleException[]>;
+  createRule(rule: Omit<ScheduleRule, "id">): Promise<number>;
+  createException(exception: Omit<ScheduleException, "id">): Promise<number>;
+}
+
+export interface PatientRepo {
+  findByPhone(phone: string): Promise<Patient | null>;
+  findById(id: number): Promise<Patient | null>;
+  create(fullName: string, phone: string): Promise<Patient>;
+}
+
+export interface BookingRepo {
+  activeStartTimes(doctorId: number, date: string): Promise<Set<string>>;
+  isSlotTaken(doctorId: number, date: string, startTime: string): Promise<boolean>;
+  create(booking: Omit<Booking, "id" | "status">): Promise<Booking>;
+  findByReference(reference: string): Promise<Booking | null>;
+  listByDoctorDate(doctorId: number, date: string): Promise<Booking[]>;
+  cancel(id: number): Promise<void>;
+}
+
+export interface SessionRepo {
+  create(stage: string): Promise<SessionRecord>;
+  find(id: string): Promise<SessionRecord | null>;
+  save(session: SessionRecord): Promise<void>;
+  appendMessage(sessionId: string, role: "user" | "assistant", content: string): Promise<void>;
+  messages(sessionId: string): Promise<ChatMessage[]>;
+}
+
+export interface AuditRepo {
+  record(eventType: string, payload: Record<string, unknown>): Promise<void>;
+}
+
+export interface ClinicRepo {
+  get(): Promise<ClinicSetting>;
+  update(patch: UpdateClinicInput): Promise<ClinicSetting>;
+}
+
+export interface ThemeRepo {
+  get(): Promise<ThemeSetting>;
+  update(patch: UpdateThemeInput): Promise<ThemeSetting>;
+}
+
+export interface StaffRepo {
+  listAll(): Promise<Staff[]>;
+  findById(id: number): Promise<Staff | null>;
+  create(input: CreateStaffInput): Promise<Staff>;
+  update(id: number, patch: UpdateStaffInput): Promise<Staff | null>;
+  deactivate(id: number): Promise<boolean>;
+}
+
+export interface SlotPresetRepo {
+  listAll(): Promise<SlotPreset[]>;
+  findById(id: number): Promise<SlotPreset | null>;
+  create(label: string, minutes: number): Promise<SlotPreset>;
+  update(
+    id: number,
+    patch: { label?: string; minutes?: number; active?: boolean },
+  ): Promise<SlotPreset | null>;
+  delete(id: number): Promise<boolean>;
+}
+
+export interface ShiftRepo {
+  listShifts(): Promise<Shift[]>;
+  findShift(id: number): Promise<Shift | null>;
+  createShift(name: string, startTime: string, endTime: string): Promise<Shift>;
+  updateShift(id: number, patch: UpdateShiftInput): Promise<Shift | null>;
+  deleteShift(id: number): Promise<boolean>;
+  listAssignments(date?: string): Promise<ShiftAssignment[]>;
+  findAssignment(id: number): Promise<ShiftAssignment | null>;
+  createAssignment(input: CreateAssignmentInput): Promise<ShiftAssignment>;
+  deleteAssignment(id: number): Promise<boolean>;
+}
+
+/** Bundle of every repository, bound to one Executor (base connection or tx). */
+export interface Repositories {
+  specialties: SpecialtyRepo;
+  doctors: DoctorRepo;
+  schedules: ScheduleRepo;
+  patients: PatientRepo;
+  bookings: BookingRepo;
+  sessions: SessionRepo;
+  audit: AuditRepo;
+  clinic: ClinicRepo;
+  theme: ThemeRepo;
+  staff: StaffRepo;
+  slotPresets: SlotPresetRepo;
+  shifts: ShiftRepo;
+}
+
+/** Builds a repositories bundle over a given executor (dialect-specific). */
+export type RepositoryFactory = (ex: Executor) => Repositories;

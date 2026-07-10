@@ -2,7 +2,7 @@ import type { AIProviderAdapter } from "../ai/provider.js";
 import { DomainError } from "../domain/types.js";
 import type { BookingService } from "../services/booking-service.js";
 import { normalizePhone } from "../services/phone.js";
-import type { SessionRepository } from "../repositories/session-repository.js";
+import type { SessionRepo } from "../repositories/ports.js";
 import { interpret } from "./interpret.js";
 import type {
   AssistantTurn,
@@ -27,20 +27,20 @@ interface StagePrompt {
 export class ConversationRouter {
   constructor(
     private readonly booking: BookingService,
-    private readonly sessions: SessionRepository,
+    private readonly sessions: SessionRepo,
     private readonly ai: AIProviderAdapter,
   ) {}
 
   async handle(sessionId: string | undefined, rawMessage: string): Promise<AssistantTurn> {
     const message = rawMessage.trim().slice(0, 500);
 
-    let session = sessionId ? this.sessions.find(sessionId) : null;
+    let session = sessionId ? await this.sessions.find(sessionId) : null;
     if (!session) {
-      session = this.sessions.create("greeting");
-      const turn = this.enterStage(session.id, "select_specialty", {}, [
+      session = await this.sessions.create("greeting");
+      const turn = await this.enterStage(session.id, "select_specialty", {}, [
         "Hello! Welcome to the clinic. I can help you book an appointment.",
       ]);
-      this.persist(turn, message);
+      await this.persist(turn, message);
       return turn;
     }
 
@@ -49,47 +49,47 @@ export class ConversationRouter {
 
     // Terminal stages: any message restarts the flow.
     if (stage === "booking_complete" || stage === "cancelled" || stage === "handoff_pending") {
-      const turn = this.enterStage(session.id, "select_specialty", {}, [
+      const turn = await this.enterStage(session.id, "select_specialty", {}, [
         "Starting a new booking.",
       ]);
-      this.persist(turn, message);
+      await this.persist(turn, message);
       return turn;
     }
 
-    const prompt = this.promptFor(stage, state);
+    const prompt = await this.promptFor(stage, state);
     const expectsFreeText = FREE_TEXT_STAGES.includes(stage);
     const interpretation = await interpret(this.ai, stage, message, prompt.options, expectsFreeText);
 
     let turn: AssistantTurn;
     if (interpretation.kind === "cancel") {
-      turn = this.enterStage(session.id, "cancelled", state, [
+      turn = await this.enterStage(session.id, "cancelled", state, [
         "No problem, I've cancelled this booking flow. Send any message to start again.",
       ]);
     } else if (interpretation.kind === "restart") {
-      turn = this.enterStage(session.id, "select_specialty", {}, ["Starting over."]);
+      turn = await this.enterStage(session.id, "select_specialty", {}, ["Starting over."]);
     } else {
       turn = await this.advance(session.id, stage, state, interpretation, message);
     }
 
-    this.persist(turn, message);
+    await this.persist(turn, message);
     return turn;
   }
 
-  getHistory(sessionId: string): { role: string; content: string; createdAt: string }[] {
+  getHistory(sessionId: string): Promise<{ role: string; content: string; createdAt: string }[]> {
     return this.sessions.messages(sessionId);
   }
 
-  private persist(turn: AssistantTurn, userMessage: string): void {
-    const session = this.sessions.find(turn.sessionId);
+  private async persist(turn: AssistantTurn, userMessage: string): Promise<void> {
+    const session = await this.sessions.find(turn.sessionId);
     if (!session) return;
     session.stage = turn.stage;
     session.state = turn.collectedEntities as Record<string, unknown>;
-    this.sessions.save(session);
-    if (userMessage.length > 0) this.sessions.appendMessage(turn.sessionId, "user", userMessage);
-    this.sessions.appendMessage(turn.sessionId, "assistant", turn.message);
+    await this.sessions.save(session);
+    if (userMessage.length > 0) await this.sessions.appendMessage(turn.sessionId, "user", userMessage);
+    await this.sessions.appendMessage(turn.sessionId, "assistant", turn.message);
   }
 
-  private async advance(
+  private advance(
     sessionId: string,
     stage: Stage,
     state: ConversationState,
@@ -117,15 +117,15 @@ export class ConversationRouter {
     }
   }
 
-  private handleSelectSpecialty(
+  private async handleSelectSpecialty(
     sessionId: string,
     state: ConversationState,
     interpretation: Interpretation,
-  ): AssistantTurn {
+  ): Promise<AssistantTurn> {
     if (interpretation.kind !== "option") {
       return this.invalidInput(sessionId, "select_specialty", state);
     }
-    const specialties = this.booking.listSpecialties();
+    const specialties = await this.booking.listSpecialties();
     const specialty = specialties[interpretation.index];
     if (!specialty) return this.invalidInput(sessionId, "select_specialty", state);
 
@@ -137,15 +137,15 @@ export class ConversationRouter {
     });
   }
 
-  private handleSelectDoctor(
+  private async handleSelectDoctor(
     sessionId: string,
     state: ConversationState,
     interpretation: Interpretation,
-  ): AssistantTurn {
+  ): Promise<AssistantTurn> {
     if (interpretation.kind !== "option" || state.specialtyId === undefined) {
       return this.invalidInput(sessionId, "select_doctor", state);
     }
-    const doctors = this.booking.listDoctorsBySpecialty(state.specialtyId);
+    const doctors = await this.booking.listDoctorsBySpecialty(state.specialtyId);
     const doctor = doctors[interpretation.index];
     if (!doctor) return this.invalidInput(sessionId, "select_doctor", state);
 
@@ -157,12 +157,12 @@ export class ConversationRouter {
     });
   }
 
-  private handleSelectDate(
+  private async handleSelectDate(
     sessionId: string,
     state: ConversationState,
     interpretation: Interpretation,
     rawMessage: string,
-  ): AssistantTurn {
+  ): Promise<AssistantTurn> {
     if (state.doctorId === undefined) return this.invalidInput(sessionId, "select_date", state);
 
     let date: string | undefined;
@@ -170,11 +170,11 @@ export class ConversationRouter {
     if (typedDate) {
       date = typedDate[0];
     } else if (interpretation.kind === "option") {
-      date = this.booking.getAvailableDates(state.doctorId)[interpretation.index];
+      date = (await this.booking.getAvailableDates(state.doctorId))[interpretation.index];
     }
     if (!date) return this.invalidInput(sessionId, "select_date", state);
 
-    const slots = this.booking.getAvailableSlots(state.doctorId, date);
+    const slots = await this.booking.getAvailableSlots(state.doctorId, date);
     if (slots.length === 0) {
       return this.enterStage(sessionId, "select_date", state, [
         `Sorry, ${state.doctorName} has no available slots on ${date}. Please pick another date.`,
@@ -183,11 +183,11 @@ export class ConversationRouter {
     return this.enterStage(sessionId, "select_slot", { ...state, invalidCount: 0, date });
   }
 
-  private handleSelectSlot(
+  private async handleSelectSlot(
     sessionId: string,
     state: ConversationState,
     interpretation: Interpretation,
-  ): AssistantTurn {
+  ): Promise<AssistantTurn> {
     if (
       interpretation.kind !== "option" ||
       state.doctorId === undefined ||
@@ -195,7 +195,7 @@ export class ConversationRouter {
     ) {
       return this.invalidInput(sessionId, "select_slot", state);
     }
-    const slots = this.booking.getAvailableSlots(state.doctorId, state.date);
+    const slots = await this.booking.getAvailableSlots(state.doctorId, state.date);
     const slot = slots[interpretation.index];
     if (!slot) return this.invalidInput(sessionId, "select_slot", state);
 
@@ -212,11 +212,11 @@ export class ConversationRouter {
     return this.enterStage(sessionId, "collect_patient_name", next);
   }
 
-  private handleCollectName(
+  private async handleCollectName(
     sessionId: string,
     state: ConversationState,
     interpretation: Interpretation,
-  ): AssistantTurn {
+  ): Promise<AssistantTurn> {
     if (interpretation.kind !== "text") {
       return this.invalidInput(sessionId, "collect_patient_name", state);
     }
@@ -233,11 +233,11 @@ export class ConversationRouter {
     });
   }
 
-  private handleCollectPhone(
+  private async handleCollectPhone(
     sessionId: string,
     state: ConversationState,
     interpretation: Interpretation,
-  ): AssistantTurn {
+  ): Promise<AssistantTurn> {
     const raw = interpretation.kind === "text" ? interpretation.value : "";
     const phone = normalizePhone(raw);
     if (!phone) {
@@ -252,11 +252,11 @@ export class ConversationRouter {
     });
   }
 
-  private handleConfirm(
+  private async handleConfirm(
     sessionId: string,
     state: ConversationState,
     interpretation: Interpretation,
-  ): AssistantTurn {
+  ): Promise<AssistantTurn> {
     // Options offered at confirm: 1. Confirm 2. Change slot 3. Cancel
     const choice =
       interpretation.kind === "confirm"
@@ -293,7 +293,7 @@ export class ConversationRouter {
     }
 
     try {
-      const result = this.booking.createBooking({
+      const result = await this.booking.createBooking({
         doctorId: state.doctorId,
         date: state.date,
         startTime: state.slotStart,
@@ -318,7 +318,11 @@ export class ConversationRouter {
     }
   }
 
-  private invalidInput(sessionId: string, stage: Stage, state: ConversationState): AssistantTurn {
+  private async invalidInput(
+    sessionId: string,
+    stage: Stage,
+    state: ConversationState,
+  ): Promise<AssistantTurn> {
     const invalidCount = (state.invalidCount ?? 0) + 1;
     if (invalidCount >= MAX_INVALID_BEFORE_HANDOFF) {
       return this.enterStage(
@@ -336,13 +340,13 @@ export class ConversationRouter {
   }
 
   /** Builds the assistant turn for a stage: prompt text + quick replies. */
-  private enterStage(
+  private async enterStage(
     sessionId: string,
     stage: Stage,
     state: ConversationState,
     prefixLines: string[] = [],
-  ): AssistantTurn {
-    const prompt = this.promptFor(stage, state);
+  ): Promise<AssistantTurn> {
+    const prompt = await this.promptFor(stage, state);
     const quickReplies: QuickReply[] = prompt.options.map((label, i) => ({
       label,
       value: String(i + 1),
@@ -358,23 +362,23 @@ export class ConversationRouter {
     };
   }
 
-  private promptFor(stage: Stage, state: ConversationState): StagePrompt {
+  private async promptFor(stage: Stage, state: ConversationState): Promise<StagePrompt> {
     switch (stage) {
       case "greeting":
       case "select_specialty": {
-        const options = this.booking.listSpecialties().map((s) => s.name);
+        const options = (await this.booking.listSpecialties()).map((s) => s.name);
         return { message: "Which specialty do you need?", options };
       }
       case "select_doctor": {
         const options =
           state.specialtyId !== undefined
-            ? this.booking.listDoctorsBySpecialty(state.specialtyId).map((d) => d.fullName)
+            ? (await this.booking.listDoctorsBySpecialty(state.specialtyId)).map((d) => d.fullName)
             : [];
         return { message: `Here are our ${state.specialtyName} doctors. Who would you like to see?`, options };
       }
       case "select_date": {
         const options =
-          state.doctorId !== undefined ? this.booking.getAvailableDates(state.doctorId) : [];
+          state.doctorId !== undefined ? await this.booking.getAvailableDates(state.doctorId) : [];
         const message =
           options.length > 0
             ? `When would you like to see ${state.doctorName}? Pick a date or type one as YYYY-MM-DD.`
@@ -384,9 +388,9 @@ export class ConversationRouter {
       case "select_slot": {
         const options =
           state.doctorId !== undefined && state.date
-            ? this.booking
-                .getAvailableSlots(state.doctorId, state.date)
-                .map((s) => `${s.startTime} - ${s.endTime}`)
+            ? (await this.booking.getAvailableSlots(state.doctorId, state.date)).map(
+                (s) => `${s.startTime} - ${s.endTime}`,
+              )
             : [];
         return { message: `Available times on ${state.date}:`, options };
       }

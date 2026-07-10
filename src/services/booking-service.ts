@@ -1,11 +1,6 @@
-import type { DB } from "../db/connection.js";
+import type { Database, Executor } from "../db/executor.js";
 import { DomainError, type Booking, type Doctor, type Patient, type Slot, type Specialty } from "../domain/types.js";
-import { AuditRepository } from "../repositories/audit-repository.js";
-import { BookingRepository } from "../repositories/booking-repository.js";
-import { DoctorRepository } from "../repositories/doctor-repository.js";
-import { PatientRepository } from "../repositories/patient-repository.js";
-import { ScheduleRepository } from "../repositories/schedule-repository.js";
-import { SpecialtyRepository } from "../repositories/specialty-repository.js";
+import type { Repositories, RepositoryFactory } from "../repositories/ports.js";
 import { generateBookingReference } from "./booking-reference.js";
 import { normalizePhone } from "./phone.js";
 import { computeSlots, weekdayOf } from "./slots.js";
@@ -26,125 +21,128 @@ export interface BookingResult {
 
 /**
  * Deterministic booking application service. The single source of truth for
- * booking validity — AI never writes here directly.
+ * booking validity — AI never writes here directly. Async and database-agnostic:
+ * works over sqlite or postgres via the injected repository factory.
  */
 export class BookingService {
-  private readonly specialties: SpecialtyRepository;
-  private readonly doctors: DoctorRepository;
-  private readonly schedules: ScheduleRepository;
-  private readonly patients: PatientRepository;
-  private readonly bookings: BookingRepository;
-  private readonly audit: AuditRepository;
+  private readonly repos: Repositories;
 
-  constructor(private readonly db: DB) {
-    this.specialties = new SpecialtyRepository(db);
-    this.doctors = new DoctorRepository(db);
-    this.schedules = new ScheduleRepository(db);
-    this.patients = new PatientRepository(db);
-    this.bookings = new BookingRepository(db);
-    this.audit = new AuditRepository(db);
+  constructor(
+    private readonly db: Database,
+    private readonly makeRepos: RepositoryFactory,
+  ) {
+    this.repos = makeRepos(db);
   }
 
-  listSpecialties(): Specialty[] {
-    return this.specialties.listActive();
+  listSpecialties(): Promise<Specialty[]> {
+    return this.repos.specialties.listActive();
   }
 
-  listDoctorsBySpecialty(specialtyId: number): Doctor[] {
-    const specialty = this.specialties.findById(specialtyId);
+  async listDoctorsBySpecialty(specialtyId: number): Promise<Doctor[]> {
+    const specialty = await this.repos.specialties.findById(specialtyId);
     if (!specialty) throw new DomainError("NOT_FOUND", "Specialty not found");
-    return this.doctors.listActiveBySpecialty(specialtyId);
+    return this.repos.doctors.listActiveBySpecialty(specialtyId);
   }
 
-  getDoctor(doctorId: number): Doctor {
-    const doctor = this.doctors.findById(doctorId);
+  async getDoctor(doctorId: number): Promise<Doctor> {
+    const doctor = await this.repos.doctors.findById(doctorId);
     if (!doctor || !doctor.active) throw new DomainError("NOT_FOUND", "Doctor not found");
     return doctor;
   }
 
-  getAvailableSlots(doctorId: number, date: string): Slot[] {
+  getAvailableSlots(doctorId: number, date: string): Promise<Slot[]> {
+    return this.computeAvailableSlots(this.repos, doctorId, date);
+  }
+
+  /** Slot computation over an arbitrary repositories bundle (base or tx-scoped). */
+  private async computeAvailableSlots(
+    repos: Repositories,
+    doctorId: number,
+    date: string,
+  ): Promise<Slot[]> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new DomainError("INVALID_INPUT", "Date must be YYYY-MM-DD");
     }
-    this.getDoctor(doctorId);
-    const rules = this.schedules.rulesForDoctorWeekday(doctorId, weekdayOf(date));
-    const exceptions = this.schedules.exceptionsForDoctorDate(doctorId, date);
-    const booked = this.bookings.activeStartTimes(doctorId, date);
+    const doctor = await repos.doctors.findById(doctorId);
+    if (!doctor || !doctor.active) throw new DomainError("NOT_FOUND", "Doctor not found");
+    const rules = await repos.schedules.rulesForDoctorWeekday(doctorId, weekdayOf(date));
+    const exceptions = await repos.schedules.exceptionsForDoctorDate(doctorId, date);
+    const booked = await repos.bookings.activeStartTimes(doctorId, date);
     return computeSlots(date, rules, exceptions, booked);
   }
 
-  /** Next N dates (starting tomorrow) on which the doctor has at least one free slot. */
-  getAvailableDates(doctorId: number, count = 5, horizonDays = 30): string[] {
+  /** Next N dates (starting tomorrow) on which the doctor has a free slot. */
+  async getAvailableDates(doctorId: number, count = 5, horizonDays = 30): Promise<string[]> {
     const dates: string[] = [];
     const today = new Date();
     for (let i = 1; i <= horizonDays && dates.length < count; i++) {
       const d = new Date(today);
       d.setDate(today.getDate() + i);
       const iso = d.toISOString().slice(0, 10);
-      if (this.getAvailableSlots(doctorId, iso).length > 0) dates.push(iso);
+      if ((await this.getAvailableSlots(doctorId, iso)).length > 0) dates.push(iso);
     }
     return dates;
   }
 
-  createOrFindPatient(fullName: string, rawPhone: string): Patient {
+  async createOrFindPatient(repos: Repositories, fullName: string, rawPhone: string): Promise<Patient> {
     const phone = normalizePhone(rawPhone);
     if (!phone) throw new DomainError("INVALID_INPUT", "Invalid phone number");
-    const existing = this.patients.findByPhone(phone);
+    const existing = await repos.patients.findByPhone(phone);
     if (existing) return existing;
-    return this.patients.create(fullName.trim(), phone);
+    return repos.patients.create(fullName.trim(), phone);
   }
 
-  createBooking(input: CreateBookingInput): BookingResult {
-    const doctor = this.getDoctor(input.doctorId);
-
-    // Transaction: re-verify availability, then insert. The partial unique
-    // index on (doctor_id, date, start_time) WHERE status='active' is the
-    // final guard against a concurrent write.
-    const txn = this.db.transaction((): BookingResult => {
-      const slots = this.getAvailableSlots(input.doctorId, input.date);
-      const slot = slots.find((s) => s.startTime === input.startTime);
-      if (!slot) {
-        throw new DomainError("SLOT_TAKEN", "Slot is no longer available");
-      }
-
-      const patient = this.createOrFindPatient(input.patientName, input.patientPhone);
-
-      let reference = generateBookingReference();
-      while (this.bookings.findByReference(reference)) {
-        reference = generateBookingReference();
-      }
-
-      let booking: Booking;
-      try {
-        booking = this.bookings.create({
-          reference,
-          patientId: patient.id,
-          doctorId: doctor.id,
-          date: slot.date,
-          startTime: slot.startTime,
-          endTime: slot.endTime,
-        });
-      } catch (err) {
-        if (err instanceof Error && err.message.includes("UNIQUE")) {
-          throw new DomainError("SLOT_TAKEN", "Slot is no longer available");
-        }
-        throw err;
-      }
-
-      this.audit.record("booking_created", {
-        reference,
-        doctorId: doctor.id,
-        patientId: patient.id,
-        date: slot.date,
-        startTime: slot.startTime,
-      });
-
-      return { booking, doctor, patient };
-    });
+  async createBooking(input: CreateBookingInput): Promise<BookingResult> {
+    const doctor = await this.getDoctor(input.doctorId);
 
     try {
-      return txn();
+      // Transaction: re-verify availability, then insert. The partial unique
+      // index on (doctor_id, date, start_time) WHERE status='active' is the
+      // final guard against a concurrent write.
+      return await this.db.tx(async (ex: Executor): Promise<BookingResult> => {
+        const repos = this.makeRepos(ex);
+        const slots = await this.computeAvailableSlots(repos, input.doctorId, input.date);
+        const slot = slots.find((s) => s.startTime === input.startTime);
+        if (!slot) {
+          throw new DomainError("SLOT_TAKEN", "Slot is no longer available");
+        }
+
+        const patient = await this.createOrFindPatient(repos, input.patientName, input.patientPhone);
+
+        let reference = generateBookingReference();
+        while (await repos.bookings.findByReference(reference)) {
+          reference = generateBookingReference();
+        }
+
+        let booking: Booking;
+        try {
+          booking = await repos.bookings.create({
+            reference,
+            patientId: patient.id,
+            doctorId: doctor.id,
+            date: slot.date,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+          });
+        } catch (err) {
+          if (err instanceof Error && /unique/i.test(err.message)) {
+            throw new DomainError("SLOT_TAKEN", "Slot is no longer available");
+          }
+          throw err;
+        }
+
+        await repos.audit.record("booking_created", {
+          reference,
+          doctorId: doctor.id,
+          patientId: patient.id,
+          date: slot.date,
+          startTime: slot.startTime,
+        });
+
+        return { booking, doctor, patient };
+      });
     } catch (err) {
-      this.audit.record("booking_failed", {
+      await this.repos.audit.record("booking_failed", {
         doctorId: input.doctorId,
         date: input.date,
         startTime: input.startTime,
@@ -154,28 +152,28 @@ export class BookingService {
     }
   }
 
-  cancelBooking(reference: string, rawPhone: string): Booking {
+  async cancelBooking(reference: string, rawPhone: string): Promise<Booking> {
     const phone = normalizePhone(rawPhone);
     if (!phone) throw new DomainError("INVALID_INPUT", "Invalid phone number");
 
-    const txn = this.db.transaction((): Booking => {
-      const booking = this.bookings.findByReference(reference.trim().toUpperCase());
+    return this.db.tx(async (ex): Promise<Booking> => {
+      const repos = this.makeRepos(ex);
+      const booking = await repos.bookings.findByReference(reference.trim().toUpperCase());
       if (!booking) throw new DomainError("NOT_FOUND", "Booking not found");
       if (booking.status === "cancelled") {
         throw new DomainError("ALREADY_CANCELLED", "Booking already cancelled");
       }
-      const patient = this.patients.findById(booking.patientId);
+      const patient = await repos.patients.findById(booking.patientId);
       if (!patient || patient.phone !== phone) {
         throw new DomainError("PHONE_MISMATCH", "Phone number does not match booking");
       }
-      this.bookings.cancel(booking.id);
-      this.audit.record("booking_cancelled", { reference: booking.reference });
+      await repos.bookings.cancel(booking.id);
+      await repos.audit.record("booking_cancelled", { reference: booking.reference });
       return { ...booking, status: "cancelled" };
     });
-    return txn();
   }
 
-  listBookings(doctorId: number, date: string): Booking[] {
-    return this.bookings.listByDoctorDate(doctorId, date);
+  listBookings(doctorId: number, date: string): Promise<Booking[]> {
+    return this.repos.bookings.listByDoctorDate(doctorId, date);
   }
 }

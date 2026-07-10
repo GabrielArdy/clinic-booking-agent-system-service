@@ -2,8 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { BookingService } from "../services/booking-service.js";
-import { DoctorRepository } from "../repositories/doctor-repository.js";
-import { ScheduleRepository } from "../repositories/schedule-repository.js";
+import type { Repositories } from "../repositories/ports.js";
 
 const createDoctorSchema = z.object({
   fullName: z.string().min(2).max(100),
@@ -30,7 +29,7 @@ const createExceptionSchema = z.object({
   reason: z.string().max(200).nullable().default(null),
 });
 
-export function adminRouter(config: AppConfig, booking: BookingService): Router {
+export function adminRouter(config: AppConfig, booking: BookingService, repos: Repositories): Router {
   const router = Router();
 
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -41,15 +40,18 @@ export function adminRouter(config: AppConfig, booking: BookingService): Router 
     next();
   });
 
-  router.get("/doctors", (req, res) => {
-    const doctors = new DoctorRepository(req.app.get("db")).listAll();
-    res.json({ doctors });
+  router.get("/doctors", async (_req, res, next) => {
+    try {
+      res.json({ doctors: await repos.doctors.listAll() });
+    } catch (err) {
+      next(err);
+    }
   });
 
-  router.post("/doctors", (req, res, next) => {
+  router.post("/doctors", async (req, res, next) => {
     try {
       const input = createDoctorSchema.parse(req.body);
-      const doctor = new DoctorRepository(req.app.get("db")).create({
+      const doctor = await repos.doctors.create({
         fullName: input.fullName,
         specialtyId: input.specialtyId,
         photoUrl: input.photoUrl,
@@ -60,41 +62,40 @@ export function adminRouter(config: AppConfig, booking: BookingService): Router 
     }
   });
 
-  router.get("/schedules", (req, res, next) => {
+  router.get("/schedules", async (req, res, next) => {
     try {
       const doctorId = z.coerce.number().int().positive().parse(req.query.doctorId);
-      const rules = new ScheduleRepository(req.app.get("db")).rulesForDoctor(doctorId);
-      res.json({ rules });
+      res.json({ rules: await repos.schedules.rulesForDoctor(doctorId) });
     } catch (err) {
       next(err);
     }
   });
 
-  router.post("/schedules", (req, res, next) => {
+  router.post("/schedules", async (req, res, next) => {
     try {
       const input = createRuleSchema.parse(req.body);
-      const id = new ScheduleRepository(req.app.get("db")).createRule(input);
+      const id = await repos.schedules.createRule(input);
       res.status(201).json({ id });
     } catch (err) {
       next(err);
     }
   });
 
-  router.post("/schedule-exceptions", (req, res, next) => {
+  router.post("/schedule-exceptions", async (req, res, next) => {
     try {
       const input = createExceptionSchema.parse(req.body);
-      const id = new ScheduleRepository(req.app.get("db")).createException(input);
+      const id = await repos.schedules.createException(input);
       res.status(201).json({ id });
     } catch (err) {
       next(err);
     }
   });
 
-  router.get("/bookings", (req, res, next) => {
+  router.get("/bookings", async (req, res, next) => {
     try {
       const doctorId = z.coerce.number().int().positive().parse(req.query.doctorId);
       const date = z.string().regex(datePattern).parse(req.query.date);
-      res.json({ bookings: booking.listBookings(doctorId, date) });
+      res.json({ bookings: await booking.listBookings(doctorId, date) });
     } catch (err) {
       next(err);
     }

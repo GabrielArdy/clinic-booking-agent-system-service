@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { testDb, nextDateForWeekday } from "./helpers.js";
-import { BookingService } from "../src/services/booking-service.js";
-import { SessionRepository } from "../src/repositories/session-repository.js";
+import { bookingService, testDb, testRepos, nextDateForWeekday } from "./helpers.js";
 import { ConversationRouter } from "../src/conversation/router.js";
 import { DisabledAIProvider } from "../src/ai/provider.js";
 
-function setup() {
-  const db = testDb();
-  const booking = new BookingService(db);
-  const sessions = new SessionRepository(db);
+async function setup() {
+  const db = await testDb();
+  const booking = bookingService(db);
+  const sessions = testRepos(db).sessions;
   const router = new ConversationRouter(booking, sessions, new DisabledAIProvider());
   return { db, booking, sessions, router };
 }
@@ -17,7 +15,7 @@ const MONDAY = nextDateForWeekday(1);
 
 describe("ConversationRouter", () => {
   it("completes a full booking without AI", async () => {
-    const { router } = setup();
+    const { router } = await setup();
 
     let turn = await router.handle(undefined, "hi");
     expect(turn.stage).toBe("select_specialty");
@@ -49,9 +47,9 @@ describe("ConversationRouter", () => {
   });
 
   it("survives session reload between turns", async () => {
-    const { router, sessions } = setup();
+    const { router, sessions } = await setup();
     const first = await router.handle(undefined, "hello");
-    const stored = sessions.find(first.sessionId);
+    const stored = await sessions.find(first.sessionId);
     expect(stored?.stage).toBe("select_specialty");
 
     const second = await router.handle(first.sessionId, "1");
@@ -59,7 +57,7 @@ describe("ConversationRouter", () => {
   });
 
   it("cancels from any stage", async () => {
-    const { router } = setup();
+    const { router } = await setup();
     const first = await router.handle(undefined, "hi");
     const second = await router.handle(first.sessionId, "1");
     const third = await router.handle(second.sessionId, "cancel");
@@ -67,7 +65,7 @@ describe("ConversationRouter", () => {
   });
 
   it("hands off after repeated invalid input", async () => {
-    const { router } = setup();
+    const { router } = await setup();
     const first = await router.handle(undefined, "hi");
     await router.handle(first.sessionId, "gibberish xyz");
     await router.handle(first.sessionId, "more gibberish");
@@ -76,7 +74,7 @@ describe("ConversationRouter", () => {
   });
 
   it("recovers when the chosen slot is taken mid-conversation", async () => {
-    const { router, booking } = setup();
+    const { router, booking } = await setup();
     const first = await router.handle(undefined, "hi");
     const sessionId = first.sessionId;
     await router.handle(sessionId, "General Medicine");
@@ -87,7 +85,7 @@ describe("ConversationRouter", () => {
     await router.handle(sessionId, "081234567890");
 
     // Someone else books 09:00 before confirmation.
-    booking.createBooking({
+    await booking.createBooking({
       doctorId: 1,
       date: MONDAY,
       startTime: "09:00",
@@ -101,7 +99,7 @@ describe("ConversationRouter", () => {
   });
 
   it("restarts after completion", async () => {
-    const { router } = setup();
+    const { router } = await setup();
     const first = await router.handle(undefined, "hi");
     const sessionId = first.sessionId;
     await router.handle(sessionId, "Dermatology");
