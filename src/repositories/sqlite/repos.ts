@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Executor } from "../../db/executor.js";
 import type {
+  AppointmentEntry,
   Booking,
   ClinicSetting,
   Doctor,
@@ -180,6 +181,20 @@ class SqliteScheduleRepository implements ScheduleRepo {
     );
     return rows.map(M.toException);
   }
+  async exceptionsForDoctorRange(
+    doctorId: number,
+    from: string,
+    to: string,
+  ): Promise<ScheduleException[]> {
+    const rows = await this.ex.all<M.ExceptionRow>(
+      `SELECT id, doctor_id, date, start_time, end_time, reason
+       FROM doctor_schedule_exceptions
+       WHERE doctor_id = ? AND date >= ? AND date <= ?
+       ORDER BY date, start_time`,
+      [doctorId, from, to],
+    );
+    return rows.map(M.toException);
+  }
   async createRule(rule: Omit<ScheduleRule, "id">): Promise<number> {
     const r = await this.ex.run(
       `INSERT INTO doctor_schedule_rules (doctor_id, weekday, start_time, end_time, slot_minutes)
@@ -272,6 +287,22 @@ class SqliteBookingRepository implements BookingRepo {
       [doctorId, date],
     );
     return rows.map(M.toBooking);
+  }
+  async listByDoctorRangeWithPatient(
+    doctorId: number,
+    from: string,
+    to: string,
+  ): Promise<AppointmentEntry[]> {
+    const rows = await this.ex.all<M.AppointmentRow>(
+      `SELECT b.id, b.reference, b.date, b.start_time, b.end_time, b.status,
+              p.id AS patient_id, p.full_name AS patient_name, p.phone AS patient_phone
+       FROM bookings b
+       JOIN patients p ON p.id = b.patient_id
+       WHERE b.doctor_id = ? AND b.date >= ? AND b.date <= ?
+       ORDER BY b.date, b.start_time`,
+      [doctorId, from, to],
+    );
+    return rows.map(M.toAppointmentEntry);
   }
   async cancel(id: number): Promise<void> {
     await this.ex.run(

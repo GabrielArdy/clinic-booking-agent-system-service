@@ -1,5 +1,6 @@
 import { toBool } from "../db/executor.js";
 import type {
+  AppointmentEntry,
   Booking,
   ClinicSetting,
   Doctor,
@@ -128,6 +129,33 @@ export function toBooking(r: BookingRow): Booking {
     startTime: r.start_time,
     endTime: r.end_time,
     status: r.status,
+  };
+}
+
+export interface AppointmentRow {
+  id: number;
+  reference: string;
+  date: string;
+  start_time: string;
+  end_time: string;
+  status: "active" | "cancelled";
+  patient_id: number;
+  patient_name: string;
+  patient_phone: string;
+}
+export function toAppointmentEntry(r: AppointmentRow): AppointmentEntry {
+  return {
+    id: r.id,
+    reference: r.reference,
+    date: r.date,
+    startTime: r.start_time,
+    endTime: r.end_time,
+    status: r.status,
+    patient: {
+      id: r.patient_id,
+      fullName: r.patient_name,
+      phone: r.patient_phone,
+    },
   };
 }
 

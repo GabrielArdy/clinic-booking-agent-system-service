@@ -40,6 +40,15 @@ export function adminRouter(config: AppConfig, booking: BookingService, repos: R
     next();
   });
 
+  // Active specialties for the add-doctor form's select dropdown.
+  router.get("/specialties", async (_req, res, next) => {
+    try {
+      res.json({ specialties: await repos.specialties.listActive() });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get("/doctors", async (_req, res, next) => {
     try {
       res.json({ doctors: await repos.doctors.listAll() });
@@ -96,6 +105,19 @@ export function adminRouter(config: AppConfig, booking: BookingService, repos: R
       const doctorId = z.coerce.number().int().positive().parse(req.query.doctorId);
       const date = z.string().regex(datePattern).parse(req.query.date);
       res.json({ bookings: await booking.listBookings(doctorId, date) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Schedule planner feed: appointments (with patient) over a date range,
+  // plus per-date summaries for the calendar component.
+  router.get("/appointments", async (req, res, next) => {
+    try {
+      const doctorId = z.coerce.number().int().positive().parse(req.query.doctorId);
+      const from = z.string().regex(datePattern).parse(req.query.from);
+      const to = z.string().regex(datePattern).parse(req.query.to);
+      res.json(await booking.listAppointments(doctorId, from, to));
     } catch (err) {
       next(err);
     }

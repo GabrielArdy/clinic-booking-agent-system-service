@@ -68,6 +68,36 @@ export interface Booking {
   status: "active" | "cancelled";
 }
 
+/** Booking enriched with patient info, for the admin schedule/planner page. */
+export interface AppointmentEntry {
+  id: number;
+  reference: string;
+  date: string; // 'YYYY-MM-DD'
+  startTime: string; // 'HH:MM'
+  endTime: string;
+  status: "active" | "cancelled";
+  patient: {
+    id: number;
+    fullName: string;
+    phone: string;
+  };
+}
+
+/**
+ * Per-date aggregate for calendar badges. Sparse: only dates that have
+ * appointments and/or schedule exceptions appear.
+ */
+export interface AppointmentDaySummary {
+  date: string; // 'YYYY-MM-DD'
+  total: number;
+  active: number;
+  cancelled: number;
+  /** Schedule exceptions (blocking time) on this date. */
+  exceptions: number;
+  /** true = a whole-day exception blocks the entire date. */
+  blocked: boolean;
+}
+
 // ---- CMS console entities ----
 
 export interface ClinicSetting {

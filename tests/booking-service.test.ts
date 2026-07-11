@@ -228,6 +228,95 @@ describe("BookingService", () => {
     await expect(service.holdSlot(1, MONDAY, "09:00", "session-C")).resolves.toBeUndefined();
   });
 
+  it("lists appointments with patient info and per-day summaries", async () => {
+    const db = await testDb();
+    const service = bookingService(db);
+    const first = await service.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Jane Doe",
+      patientPhone: "081234567890",
+    });
+    await service.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:30",
+      patientName: "John Roe",
+      patientPhone: "081298765432",
+    });
+    await service.cancelBooking(first.booking.reference, "081234567890");
+
+    const result = await service.listAppointments(1, MONDAY, MONDAY);
+    expect(result.doctor.id).toBe(1);
+    expect(result.appointments.map((a) => a.startTime)).toEqual(["09:00", "09:30"]);
+    expect(result.appointments[0]).toMatchObject({
+      status: "cancelled",
+      patient: { fullName: "Jane Doe", phone: "6281234567890" },
+    });
+    expect(result.exceptions).toEqual([]);
+    expect(result.days).toEqual([
+      { date: MONDAY, total: 2, active: 1, cancelled: 1, exceptions: 0, blocked: false },
+    ]);
+  });
+
+  it("aggregates schedule exceptions into the planner response", async () => {
+    const db = await testDb();
+    const service = bookingService(db);
+    const repos = testRepos(db);
+    const TUESDAY = nextDateForWeekday(2);
+    // Partial block on Monday, whole day off on Tuesday.
+    await repos.schedules.createException({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "11:00",
+      endTime: "12:00",
+      reason: "meeting",
+    });
+    await repos.schedules.createException({
+      doctorId: 1,
+      date: TUESDAY,
+      startTime: null,
+      endTime: null,
+      reason: "leave",
+    });
+    await service.createBooking({
+      doctorId: 1,
+      date: MONDAY,
+      startTime: "09:00",
+      patientName: "Jane Doe",
+      patientPhone: "081234567890",
+    });
+
+    const fromTo = [MONDAY, TUESDAY].sort() as [string, string];
+    const result = await service.listAppointments(1, fromTo[0], fromTo[1]);
+    expect(result.exceptions).toHaveLength(2);
+    expect(result.exceptions.map((e) => e.reason).sort()).toEqual(["leave", "meeting"]);
+
+    const monday = result.days.find((d) => d.date === MONDAY);
+    expect(monday).toMatchObject({ total: 1, active: 1, exceptions: 1, blocked: false });
+    // Exception-only date still appears in days, flagged blocked.
+    const tuesday = result.days.find((d) => d.date === TUESDAY);
+    expect(tuesday).toMatchObject({ total: 0, active: 0, exceptions: 1, blocked: true });
+  });
+
+  it("validates the appointment range", async () => {
+    const service = bookingService(await testDb());
+    await expect(service.listAppointments(1, "2026-07-20", "2026-07-10")).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+    });
+    await expect(service.listAppointments(1, "2026-01-01", "2026-12-31")).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+    });
+    await expect(service.listAppointments(999, MONDAY, MONDAY)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    // Empty range on a valid doctor returns empty collections.
+    const empty = await service.listAppointments(1, "2026-01-01", "2026-01-02");
+    expect(empty.appointments).toEqual([]);
+    expect(empty.days).toEqual([]);
+  });
+
   it("looks up a booking by reference and phone with cancellability", async () => {
     const db = await testDb();
     const service = bookingService(db, () => new Date(`${MONDAY}T00:00:00`));

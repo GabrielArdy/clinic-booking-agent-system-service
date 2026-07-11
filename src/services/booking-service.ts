@@ -1,5 +1,15 @@
 import type { Database, Executor } from "../db/executor.js";
-import { DomainError, type Booking, type Doctor, type Patient, type Slot, type Specialty } from "../domain/types.js";
+import {
+  DomainError,
+  type AppointmentDaySummary,
+  type AppointmentEntry,
+  type Booking,
+  type Doctor,
+  type Patient,
+  type ScheduleException,
+  type Slot,
+  type Specialty,
+} from "../domain/types.js";
 import type { Repositories, RepositoryFactory } from "../repositories/ports.js";
 import { generateBookingReference } from "./booking-reference.js";
 import { normalizePhone } from "./phone.js";
@@ -339,5 +349,73 @@ export class BookingService {
 
   listBookings(doctorId: number, date: string): Promise<Booking[]> {
     return this.repos.bookings.listByDoctorDate(doctorId, date);
+  }
+
+  /**
+   * Appointments of one doctor within [from, to] for the admin schedule
+   * planner: enriched entries for the list, schedule exceptions (blocking
+   * time), and per-date summaries for the calendar. Range capped at 92 days.
+   */
+  async listAppointments(
+    doctorId: number,
+    from: string,
+    to: string,
+  ): Promise<{
+    doctor: Doctor;
+    appointments: AppointmentEntry[];
+    exceptions: ScheduleException[];
+    days: AppointmentDaySummary[];
+  }> {
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    if (!datePattern.test(from) || !datePattern.test(to)) {
+      throw new DomainError("INVALID_INPUT", "Dates must be YYYY-MM-DD");
+    }
+    if (from > to) {
+      throw new DomainError("INVALID_INPUT", "'from' must not be after 'to'");
+    }
+    const spanDays =
+      (slotStartDate(to, "00:00").getTime() - slotStartDate(from, "00:00").getTime()) /
+        (24 * HOUR_MS) +
+      1;
+    if (spanDays > 92) {
+      throw new DomainError("INVALID_INPUT", "Date range must not exceed 92 days");
+    }
+    // Inactive doctors keep their history visible on the admin planner.
+    const doctor = await this.repos.doctors.findById(doctorId);
+    if (!doctor) throw new DomainError("NOT_FOUND", "Doctor not found");
+
+    const [appointments, exceptions] = await Promise.all([
+      this.repos.bookings.listByDoctorRangeWithPatient(doctorId, from, to),
+      this.repos.schedules.exceptionsForDoctorRange(doctorId, from, to),
+    ]);
+
+    const byDate = new Map<string, AppointmentDaySummary>();
+    const dayFor = (date: string): AppointmentDaySummary => {
+      const day = byDate.get(date) ?? {
+        date,
+        total: 0,
+        active: 0,
+        cancelled: 0,
+        exceptions: 0,
+        blocked: false,
+      };
+      byDate.set(date, day);
+      return day;
+    };
+    for (const appt of appointments) {
+      const day = dayFor(appt.date);
+      day.total += 1;
+      if (appt.status === "active") day.active += 1;
+      else day.cancelled += 1;
+    }
+    for (const ex of exceptions) {
+      const day = dayFor(ex.date);
+      day.exceptions += 1;
+      // Whole-day exception (no time window) blocks the entire date.
+      if (ex.startTime === null || ex.endTime === null) day.blocked = true;
+    }
+
+    const days = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    return { doctor, appointments, exceptions, days };
   }
 }

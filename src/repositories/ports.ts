@@ -1,5 +1,6 @@
 import type { Executor } from "../db/executor.js";
 import type {
+  AppointmentEntry,
   Booking,
   ClinicSetting,
   Doctor,
@@ -120,6 +121,12 @@ export interface ScheduleRepo {
   rulesForDoctorWeekday(doctorId: number, weekday: number): Promise<ScheduleRule[]>;
   rulesForDoctor(doctorId: number): Promise<ScheduleRule[]>;
   exceptionsForDoctorDate(doctorId: number, date: string): Promise<ScheduleException[]>;
+  /** Exceptions within [from, to], sorted by date then start time. */
+  exceptionsForDoctorRange(
+    doctorId: number,
+    from: string,
+    to: string,
+  ): Promise<ScheduleException[]>;
   createRule(rule: Omit<ScheduleRule, "id">): Promise<number>;
   createException(exception: Omit<ScheduleException, "id">): Promise<number>;
 }
@@ -139,6 +146,12 @@ export interface BookingRepo {
   create(booking: Omit<Booking, "id" | "status">, slotSeq: number): Promise<Booking>;
   findByReference(reference: string): Promise<Booking | null>;
   listByDoctorDate(doctorId: number, date: string): Promise<Booking[]>;
+  /** Bookings + patient info for a doctor within [from, to], sorted by date, time. */
+  listByDoctorRangeWithPatient(
+    doctorId: number,
+    from: string,
+    to: string,
+  ): Promise<AppointmentEntry[]>;
   cancel(id: number): Promise<void>;
 }
 
