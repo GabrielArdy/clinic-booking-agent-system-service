@@ -44,10 +44,18 @@ export function createApp(params: {
 }): express.Express {
   const { config, conversation, booking, auth, repos } = params;
   const app = express();
-  app.use((_req: Request, res: Response, next: NextFunction) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+  // CORS: allowlist from CORS_ORIGINS (comma-separated); "*" = any origin.
+  const allowAllOrigins = config.corsOrigins.includes("*");
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const origin = req.header("origin");
+    if (allowAllOrigins) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    } else if (origin && config.corsOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-admin-token");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-admin-token,Authorization");
     next();
   });
   app.options("*", (_req, res) => {

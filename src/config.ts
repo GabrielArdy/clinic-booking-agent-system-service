@@ -10,6 +10,8 @@ export interface AppConfig {
   databasePath: string; // sqlite only
   postgres: PgConfig; // postgres only
   adminToken: string;
+  /** Allowed CORS origins; ["*"] = any (no credentials mode). */
+  corsOrigins: string[];
   /** Redis connection URL; empty = in-memory slot locks (single process). */
   redisUrl: string;
   /** Seconds an in-progress booking holds its slot before auto-release. */
@@ -56,6 +58,10 @@ export function loadConfig(): AppConfig {
       ssl: (process.env.PGSSL ?? "").toLowerCase() === "true",
     },
     adminToken: process.env.ADMIN_TOKEN ?? "",
+    corsOrigins: (process.env.CORS_ORIGINS ?? "*")
+      .split(",")
+      .map((s) => s.trim().replace(/\/+$/, "")) // origins never carry a trailing slash
+      .filter((s) => s.length > 0),
     redisUrl: process.env.REDIS_URL ?? "",
     slotHoldTtlSeconds: Number(process.env.SLOT_HOLD_TTL_SECONDS ?? 300),
     ai: {
