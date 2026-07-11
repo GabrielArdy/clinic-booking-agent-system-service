@@ -98,6 +98,60 @@ export interface AppointmentDaySummary {
   blocked: boolean;
 }
 
+// ---- Auth / RBAC entities ----
+
+export type ActiveStatus = "ACTIVE" | "INACTIVE";
+
+export interface MasterGroup {
+  id: number;
+  groupName: string;
+  groupCode: string; // e.g. 'AD100', 'DOC100', 'STF100'
+  groupStatus: ActiveStatus;
+}
+
+export interface MasterRole {
+  id: number;
+  roleCode: string; // e.g. 'CMS_CLINIC', 'DOC_APPOINTMENT'
+  roleName: string;
+  description: string | null;
+  groupCode: string; // default group the role belongs to
+  roleStatus: ActiveStatus;
+}
+
+export interface MasterPosition {
+  id: number;
+  positionCode: string; // e.g. 'A001', 'D001', 'D012', 'P001'
+  positionName: string;
+  groupCode: string;
+}
+
+/** Login account. Password hash never leaves the repository/service layer. */
+export interface AuthUser {
+  id: number;
+  email: string;
+  fullName: string;
+  positionCode: string;
+  positionName?: string;
+  groupCode?: string;
+  doctorId: number | null;
+  staffId: number | null;
+  status: ActiveStatus;
+  roles: string[]; // role codes
+}
+
+export interface AuthSession {
+  token: string;
+  userId: number;
+  expiresAt: string; // ISO datetime
+}
+
+export interface AuditLogEntry {
+  id: number;
+  eventType: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
 // ---- CMS console entities ----
 
 export interface ClinicSetting {
@@ -166,7 +220,9 @@ export class DomainError extends Error {
       | "PHONE_MISMATCH"
       | "ALREADY_CANCELLED"
       | "TOO_LATE_TO_BOOK"
-      | "TOO_LATE_TO_CANCEL",
+      | "TOO_LATE_TO_CANCEL"
+      | "UNAUTHORIZED"
+      | "FORBIDDEN",
     message: string,
   ) {
     super(message);

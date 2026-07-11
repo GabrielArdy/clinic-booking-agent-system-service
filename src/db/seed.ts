@@ -6,6 +6,8 @@ import type { Database } from "./executor.js";
 import { runMigrations } from "./migrate.js";
 import { repositoryFactory } from "../repositories/factory.js";
 import { logger } from "../logging/logger.js";
+import { hashPassword } from "../services/password.js";
+import { GROUPS, GROUP_DEFAULT_ROLES, ROLES } from "../services/auth-service.js";
 
 interface DoctorSeed {
   name: string;
@@ -63,6 +65,41 @@ const DATA: Record<string, DoctorSeed[]> = {
   ],
 };
 
+// ---- auth / RBAC masters ----
+
+const GROUP_SEED: [string, string][] = [
+  // [group_code, group_name]
+  [GROUPS.ADMIN, "Admin"],
+  [GROUPS.DOCTOR, "Doctor"],
+  [GROUPS.STAFF, "Staff"],
+];
+
+const ROLE_SEED: [string, string, string, string][] = [
+  // [role_code, role_name, group_code, description]
+  [ROLES.ADM_DASHBOARD, "Admin Dashboard", GROUPS.ADMIN, "Admin dashboard + operational admin endpoints"],
+  [ROLES.CMS_CLINIC, "CMS Clinic", GROUPS.ADMIN, "Clinic profile settings"],
+  [ROLES.CMS_STAFF_DOCTOR, "Staff & Doctor CMS", GROUPS.ADMIN, "Doctors, staff, specialties management"],
+  [ROLES.CMS_THEME, "Theme CMS", GROUPS.ADMIN, "Theme / branding settings"],
+  [ROLES.AUDIT_LOG, "Audit Log", GROUPS.ADMIN, "Read audit trail"],
+  [ROLES.CMS_SLOT, "Slot CMS", GROUPS.ADMIN, "Slot presets management"],
+  [ROLES.CMS_ROSTER, "Roster / Shift CMS", GROUPS.ADMIN, "Shifts + shift assignments"],
+  [ROLES.CMS_POSITION, "Position CMS", GROUPS.ADMIN, "Positions, groups, roles, user accounts"],
+  [ROLES.DOC_DASHBOARD, "Doctor Dashboard", GROUPS.DOCTOR, "Schedule page + today's shift"],
+  [ROLES.DOC_EXCEPTION, "Doctor Exceptions", GROUPS.DOCTOR, "Own blocking time management"],
+  [ROLES.DOC_APPOINTMENT, "Doctor Appointments", GROUPS.DOCTOR, "Own appointment list + detail"],
+  [ROLES.STF_DASHBOARD, "Staff Dashboard", GROUPS.STAFF, "Today's shift info"],
+];
+
+const POSITION_SEED: [string, string, string][] = [
+  // [position_code, position_name, group_code]
+  ["A001", "IT Head Clinic", GROUPS.ADMIN],
+  ["D001", "General Doctor", GROUPS.DOCTOR],
+  ["D012", "Specialist Doctor", GROUPS.DOCTOR],
+  ["N001", "Nurse", GROUPS.STAFF],
+  ["P001", "Pharmacist", GROUPS.STAFF],
+  ["DA01", "Dental Assistant", GROUPS.STAFF],
+];
+
 const SLOT_PRESETS: [string, number][] = [
   ["Quick (15 min)", 15],
   ["Standard (30 min)", 30],
@@ -116,6 +153,69 @@ export async function seed(db: Database): Promise<void> {
 
     const clinic = await r.clinic.get();
     if (clinic.name === "") await r.clinic.update({ name: "Sandbox Clinic" });
+
+    // ---- auth / RBAC masters (idempotent upserts) ----
+    for (const [code, name] of GROUP_SEED) await r.auth.upsertGroup(code, name);
+    for (const [code, name, groupCode, description] of ROLE_SEED) {
+      await r.auth.upsertRole(code, name, groupCode, description);
+    }
+    for (const [code, name, groupCode] of POSITION_SEED) {
+      await r.auth.upsertPosition(code, name, groupCode);
+    }
+
+    // Demo staff entity for the staff demo account.
+    let nurse = (await r.staff.listAll()).find((s) => s.fullName === "Sari Wulandari");
+    if (!nurse) {
+      nurse = await r.staff.create({ fullName: "Sari Wulandari", role: "nurse" });
+    }
+    const amanda = (await r.doctors.listAll()).find((d) => d.fullName === "Dr. Amanda Putri");
+
+    // Demo login accounts, one per group. CHANGE PASSWORDS OUTSIDE DEV.
+    const demoUsers: {
+      email: string;
+      password: string;
+      fullName: string;
+      positionCode: string;
+      groupCode: string;
+      doctorId?: number;
+      staffId?: number;
+    }[] = [
+      {
+        email: "admin@clinic.test",
+        password: "Admin123!",
+        fullName: "Clinic IT Admin",
+        positionCode: "A001",
+        groupCode: GROUPS.ADMIN,
+      },
+      {
+        email: "doctor@clinic.test",
+        password: "Doctor123!",
+        fullName: "Dr. Amanda Putri",
+        positionCode: "D001",
+        groupCode: GROUPS.DOCTOR,
+        ...(amanda ? { doctorId: amanda.id } : {}),
+      },
+      {
+        email: "staff@clinic.test",
+        password: "Staff123!",
+        fullName: "Sari Wulandari",
+        positionCode: "N001",
+        groupCode: GROUPS.STAFF,
+        staffId: nurse.id,
+      },
+    ];
+    for (const u of demoUsers) {
+      if (await r.auth.findUserByEmail(u.email)) continue;
+      const created = await r.auth.createUser({
+        email: u.email,
+        passwordHash: hashPassword(u.password),
+        fullName: u.fullName,
+        positionCode: u.positionCode,
+        doctorId: u.doctorId ?? null,
+        staffId: u.staffId ?? null,
+      });
+      await r.auth.setUserRoles(created.id, GROUP_DEFAULT_ROLES[u.groupCode] ?? []);
+    }
   });
 }
 

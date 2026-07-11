@@ -1,8 +1,10 @@
-import { Router, type NextFunction, type Request, type Response } from "express";
+import { Router } from "express";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import { DomainError } from "../domain/types.js";
 import type { Repositories } from "../repositories/ports.js";
+import { ROLES, type AuthService } from "../services/auth-service.js";
+import { authenticate, requireRoles } from "./guard.js";
 
 const hex = /^#[0-9a-fA-F]{6}$/;
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -113,16 +115,130 @@ const assignmentCreate = z
     message: "Provide exactly one of doctorId or staffId",
   });
 
-export function cmsRouter(config: AppConfig, repos: Repositories): Router {
+const positionCreate = z.object({
+  positionCode: z.string().min(2).max(50),
+  positionName: z.string().min(2).max(100),
+  groupCode: z.string().min(2).max(50),
+});
+const positionUpdate = z.object({
+  positionName: z.string().min(2).max(100).optional(),
+  groupCode: z.string().min(2).max(50).optional(),
+});
+
+const userCreate = z.object({
+  email: z.string().email().max(200),
+  password: z.string().min(8).max(200),
+  fullName: z.string().min(2).max(100),
+  positionCode: z.string().min(2).max(50),
+  doctorId: z.number().int().positive().nullable().default(null),
+  staffId: z.number().int().positive().nullable().default(null),
+  roles: z.array(z.string().max(50)).optional(),
+});
+const userUpdate = z.object({
+  fullName: z.string().min(2).max(100).optional(),
+  password: z.string().min(8).max(200).optional(),
+  positionCode: z.string().min(2).max(50).optional(),
+  doctorId: z.number().int().positive().nullable().optional(),
+  staffId: z.number().int().positive().nullable().optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+  roles: z.array(z.string().max(50)).optional(),
+});
+
+export function cmsRouter(
+  config: AppConfig,
+  auth: AuthService,
+  repos: Repositories,
+): Router {
   const router = Router();
 
-  // Reuses the admin secret, mounted separately at /api/cms.
-  router.use((req: Request, res: Response, next: NextFunction) => {
-    if (!config.adminToken || req.header("x-admin-token") !== config.adminToken) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
+  // Bearer (RBAC) or legacy x-admin-token; each CMS section has its own role.
+  router.use(authenticate(config, auth));
+  router.use("/clinic", requireRoles(ROLES.CMS_CLINIC));
+  router.use("/theme", requireRoles(ROLES.CMS_THEME));
+  router.use(["/specialties", "/doctors", "/staff"], requireRoles(ROLES.CMS_STAFF_DOCTOR));
+  router.use("/slot-presets", requireRoles(ROLES.CMS_SLOT));
+  router.use(["/shifts", "/shift-assignments"], requireRoles(ROLES.CMS_ROSTER));
+  router.use(["/positions", "/groups", "/roles", "/users"], requireRoles(ROLES.CMS_POSITION));
+
+  // ---- Position CMS + account management ----
+  router.get("/groups", async (_req, res, next) => {
+    try {
+      res.json({ groups: await repos.auth.listGroups() });
+    } catch (err) {
+      next(err);
     }
-    next();
+  });
+  router.get("/roles", async (_req, res, next) => {
+    try {
+      res.json({ roles: await repos.auth.listRoles() });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.get("/positions", async (_req, res, next) => {
+    try {
+      res.json({ positions: await repos.auth.listPositions() });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.post("/positions", async (req, res, next) => {
+    try {
+      const input = positionCreate.parse(req.body);
+      const groups = await repos.auth.listGroups();
+      if (!groups.some((g) => g.groupCode === input.groupCode)) notFound("Group");
+      if (await repos.auth.findPositionByCode(input.positionCode)) {
+        throw new DomainError("INVALID_INPUT", "Position code already exists");
+      }
+      res.status(201).json({ position: await repos.auth.createPosition(input) });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/positions/:code", async (req, res, next) => {
+    try {
+      const patch = positionUpdate.parse(req.body);
+      if (patch.groupCode !== undefined) {
+        const groups = await repos.auth.listGroups();
+        if (!groups.some((g) => g.groupCode === patch.groupCode)) notFound("Group");
+      }
+      const position = await repos.auth.updatePosition(String(req.params.code), patch);
+      if (!position) notFound("Position");
+      res.json({ position });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.delete("/positions/:code", async (req, res, next) => {
+    try {
+      if (!(await repos.auth.deletePosition(String(req.params.code)))) notFound("Position");
+      res.json({ positionCode: req.params.code, deleted: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/users", async (_req, res, next) => {
+    try {
+      res.json({ users: await auth.listUsers() });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.post("/users", async (req, res, next) => {
+    try {
+      res.status(201).json({ user: await auth.createUser(userCreate.parse(req.body)) });
+    } catch (err) {
+      next(err);
+    }
+  });
+  router.put("/users/:id", async (req, res, next) => {
+    try {
+      const id = idParam.parse(req.params.id);
+      res.json({ user: await auth.updateUser(id, userUpdate.parse(req.body)) });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // ---- Clinic Setting (singleton) ----

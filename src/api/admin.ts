@@ -1,8 +1,10 @@
-import { Router, type NextFunction, type Request, type Response } from "express";
+import { Router } from "express";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
+import { ROLES, type AuthService } from "../services/auth-service.js";
 import type { BookingService } from "../services/booking-service.js";
 import type { Repositories } from "../repositories/ports.js";
+import { authenticate, requireRoles } from "./guard.js";
 
 const createDoctorSchema = z.object({
   fullName: z.string().min(2).max(100),
@@ -29,16 +31,34 @@ const createExceptionSchema = z.object({
   reason: z.string().max(200).nullable().default(null),
 });
 
-export function adminRouter(config: AppConfig, booking: BookingService, repos: Repositories): Router {
+export function adminRouter(
+  config: AppConfig,
+  auth: AuthService,
+  booking: BookingService,
+  repos: Repositories,
+): Router {
   const router = Router();
 
-  router.use((req: Request, res: Response, next: NextFunction) => {
-    if (!config.adminToken || req.header("x-admin-token") !== config.adminToken) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
+  // Bearer (RBAC) or legacy x-admin-token. Operational admin endpoints need
+  // ADM_DASHBOARD; the audit log page has its own role below.
+  router.use(authenticate(config, auth));
+
+  router.get("/audit-logs", requireRoles(ROLES.AUDIT_LOG), async (req, res, next) => {
+    try {
+      const query = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(200).default(50),
+          offset: z.coerce.number().int().min(0).default(0),
+          eventType: z.string().max(100).optional(),
+        })
+        .parse(req.query);
+      res.json({ auditLogs: await repos.audit.list(query) });
+    } catch (err) {
+      next(err);
     }
-    next();
   });
+
+  router.use(requireRoles(ROLES.ADM_DASHBOARD));
 
   // Active specialties for the add-doctor form's select dropdown.
   router.get("/specialties", async (_req, res, next) => {

@@ -4,10 +4,14 @@ import type { AppConfig } from "../config.js";
 import { DomainError } from "../domain/types.js";
 import { logger } from "../logging/logger.js";
 import type { ConversationRouter } from "../conversation/router.js";
+import type { AuthService } from "../services/auth-service.js";
 import type { BookingService } from "../services/booking-service.js";
 import type { Repositories } from "../repositories/ports.js";
 import { adminRouter } from "./admin.js";
+import { authRouter } from "./auth.js";
 import { cmsRouter } from "./cms.js";
+import { doctorRouter } from "./doctor.js";
+import { staffRouter } from "./staff.js";
 
 const chatSchema = z.object({
   sessionId: z.string().uuid().optional(),
@@ -27,15 +31,18 @@ const DOMAIN_STATUS: Record<DomainError["code"], number> = {
   ALREADY_CANCELLED: 409,
   TOO_LATE_TO_BOOK: 409,
   TOO_LATE_TO_CANCEL: 409,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
 };
 
 export function createApp(params: {
   config: AppConfig;
   conversation: ConversationRouter;
   booking: BookingService;
+  auth: AuthService;
   repos: Repositories;
 }): express.Express {
-  const { config, conversation, booking, repos } = params;
+  const { config, conversation, booking, auth, repos } = params;
   const app = express();
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -103,8 +110,11 @@ export function createApp(params: {
     }
   });
 
-  app.use("/api/admin", adminRouter(config, booking, repos));
-  app.use("/api/cms", cmsRouter(config, repos));
+  app.use("/api/auth", authRouter(config, auth));
+  app.use("/api/admin", adminRouter(config, auth, booking, repos));
+  app.use("/api/cms", cmsRouter(config, auth, repos));
+  app.use("/api/doctor", doctorRouter(config, auth, booking, repos));
+  app.use("/api/staff", staffRouter(config, auth, repos));
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof z.ZodError) {
