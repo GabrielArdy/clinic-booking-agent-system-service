@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { Executor } from "../../db/executor.js";
 import type {
+  ActiveStatus,
   AppointmentEntry,
+  AuditLogEntry,
+  AuthSession,
   Booking,
   ClinicSetting,
+  MasterGroup,
+  MasterPosition,
+  MasterRole,
   Doctor,
   Patient,
   ScheduleException,
@@ -18,12 +24,15 @@ import type {
 import * as M from "../mappers.js";
 import type {
   AuditRepo,
+  AuthRepo,
+  AuthUserRecord,
   BookingRepo,
   ChatMessage,
   ClinicRepo,
   CreateAssignmentInput,
   CreateDoctorInput,
   CreateStaffInput,
+  CreateUserInput,
   DoctorRepo,
   PatientRepo,
   Repositories,
@@ -37,6 +46,7 @@ import type {
   ThemeRepo,
   UpdateClinicInput,
   UpdateDoctorInput,
+  UpdateUserInput,
   UpdateShiftInput,
   UpdateSpecialtyInput,
   UpdateStaffInput,
@@ -359,6 +369,235 @@ class PgAuditRepository implements AuditRepo {
       JSON.stringify(payload),
     ]);
   }
+  async list(opts: { limit: number; offset: number; eventType?: string }): Promise<AuditLogEntry[]> {
+    const filter = opts.eventType ? "WHERE event_type = $3" : "";
+    const params: (string | number)[] = opts.eventType
+      ? [opts.limit, opts.offset, opts.eventType]
+      : [opts.limit, opts.offset];
+    const rows = await this.ex.all<M.AuditRow>(
+      `SELECT id, event_type, payload_json, created_at FROM audit_events
+       ${filter} ORDER BY id DESC LIMIT $1 OFFSET $2`,
+      params,
+    );
+    return rows.map(M.toAuditEntry);
+  }
+}
+
+const AUTH_USER_SELECT = `
+  SELECT u.id, u.email, u.password_hash, u.full_name, u.position_code,
+         p.position_name, p.group_code, u.doctor_id, u.staff_id, u.user_status
+  FROM users u
+  JOIN master_position p ON p.position_code = u.position_code
+`;
+
+function toAuthUserRecord(r: M.AuthUserRow): AuthUserRecord {
+  return {
+    id: r.id,
+    email: r.email,
+    passwordHash: r.password_hash,
+    fullName: r.full_name,
+    positionCode: r.position_code,
+    positionName: r.position_name,
+    groupCode: r.group_code,
+    doctorId: r.doctor_id,
+    staffId: r.staff_id,
+    status: r.user_status,
+  };
+}
+
+class PgAuthRepository implements AuthRepo {
+  constructor(private readonly ex: Executor) {}
+
+  async findUserByEmail(email: string): Promise<AuthUserRecord | null> {
+    const row = await this.ex.get<M.AuthUserRow>(
+      `${AUTH_USER_SELECT} WHERE u.email = $1 AND u.deleted_at IS NULL`,
+      [email.toLowerCase()],
+    );
+    return row ? toAuthUserRecord(row) : null;
+  }
+  async findUserById(id: number): Promise<AuthUserRecord | null> {
+    const row = await this.ex.get<M.AuthUserRow>(
+      `${AUTH_USER_SELECT} WHERE u.id = $1 AND u.deleted_at IS NULL`,
+      [id],
+    );
+    return row ? toAuthUserRecord(row) : null;
+  }
+  async listUsers(): Promise<AuthUserRecord[]> {
+    const rows = await this.ex.all<M.AuthUserRow>(
+      `${AUTH_USER_SELECT} WHERE u.deleted_at IS NULL ORDER BY u.full_name`,
+    );
+    return rows.map(toAuthUserRecord);
+  }
+  async createUser(input: CreateUserInput): Promise<AuthUserRecord> {
+    const r = await this.ex.run(
+      `INSERT INTO users (email, password_hash, full_name, position_code, doctor_id, staff_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [
+        input.email.toLowerCase(),
+        input.passwordHash,
+        input.fullName,
+        input.positionCode,
+        input.doctorId ?? null,
+        input.staffId ?? null,
+      ],
+    );
+    return (await this.findUserById(r.lastId!))!;
+  }
+  async updateUser(id: number, patch: UpdateUserInput): Promise<AuthUserRecord | null> {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    const add = (col: string, v: unknown): void => {
+      params.push(v);
+      sets.push(`${col} = $${params.length}`);
+    };
+    if (patch.fullName !== undefined) add("full_name", patch.fullName);
+    if (patch.passwordHash !== undefined) add("password_hash", patch.passwordHash);
+    if (patch.positionCode !== undefined) add("position_code", patch.positionCode);
+    if (patch.doctorId !== undefined) add("doctor_id", patch.doctorId);
+    if (patch.staffId !== undefined) add("staff_id", patch.staffId);
+    if (patch.status !== undefined) add("user_status", patch.status);
+    if (sets.length > 0) {
+      sets.push("updated_at = now()");
+      params.push(id);
+      await this.ex.run(`UPDATE users SET ${sets.join(", ")} WHERE id = $${params.length}`, params);
+    }
+    return this.findUserById(id);
+  }
+
+  async rolesForUser(userId: number): Promise<string[]> {
+    const rows = await this.ex.all<{ role_code: string }>(
+      `SELECT ur.role_code FROM user_roles ur
+       JOIN master_roles r ON r.role_code = ur.role_code
+       WHERE ur.user_id = $1 AND r.role_status = 'ACTIVE' AND r.deleted_at IS NULL
+       ORDER BY ur.role_code`,
+      [userId],
+    );
+    return rows.map((r) => r.role_code);
+  }
+  async setUserRoles(userId: number, roleCodes: string[]): Promise<void> {
+    await this.ex.run("DELETE FROM user_roles WHERE user_id = $1", [userId]);
+    for (const code of roleCodes) {
+      await this.ex.run("INSERT INTO user_roles (user_id, role_code) VALUES ($1, $2)", [
+        userId,
+        code,
+      ]);
+    }
+  }
+
+  async listGroups(): Promise<MasterGroup[]> {
+    const rows = await this.ex.all<M.GroupRow>(
+      `SELECT id, group_name, group_code, group_status FROM master_groups
+       WHERE deleted_at IS NULL ORDER BY group_code`,
+    );
+    return rows.map(M.toGroup);
+  }
+  async listRoles(): Promise<MasterRole[]> {
+    const rows = await this.ex.all<M.RoleRow>(
+      `SELECT id, role_code, role_name, description, group_code, role_status FROM master_roles
+       WHERE deleted_at IS NULL ORDER BY role_code`,
+    );
+    return rows.map(M.toRole);
+  }
+  async listPositions(): Promise<MasterPosition[]> {
+    const rows = await this.ex.all<M.PositionRow>(
+      `SELECT id, position_code, position_name, group_code FROM master_position
+       WHERE deleted_at IS NULL ORDER BY position_code`,
+    );
+    return rows.map(M.toPosition);
+  }
+  async findPositionByCode(code: string): Promise<MasterPosition | null> {
+    const row = await this.ex.get<M.PositionRow>(
+      `SELECT id, position_code, position_name, group_code FROM master_position
+       WHERE position_code = $1 AND deleted_at IS NULL`,
+      [code],
+    );
+    return row ? M.toPosition(row) : null;
+  }
+  async createPosition(input: {
+    positionCode: string;
+    positionName: string;
+    groupCode: string;
+  }): Promise<MasterPosition> {
+    await this.ex.run(
+      "INSERT INTO master_position (position_code, position_name, group_code) VALUES ($1, $2, $3)",
+      [input.positionCode, input.positionName, input.groupCode],
+    );
+    return (await this.findPositionByCode(input.positionCode))!;
+  }
+  async updatePosition(
+    code: string,
+    patch: { positionName?: string; groupCode?: string },
+  ): Promise<MasterPosition | null> {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    const add = (col: string, v: unknown): void => {
+      params.push(v);
+      sets.push(`${col} = $${params.length}`);
+    };
+    if (patch.positionName !== undefined) add("position_name", patch.positionName);
+    if (patch.groupCode !== undefined) add("group_code", patch.groupCode);
+    if (sets.length > 0) {
+      sets.push("updated_at = now()");
+      params.push(code);
+      await this.ex.run(
+        `UPDATE master_position SET ${sets.join(", ")} WHERE position_code = $${params.length} AND deleted_at IS NULL`,
+        params,
+      );
+    }
+    return this.findPositionByCode(code);
+  }
+  async deletePosition(code: string): Promise<boolean> {
+    const r = await this.ex.run(
+      `UPDATE master_position SET deleted_at = now()
+       WHERE position_code = $1 AND deleted_at IS NULL`,
+      [code],
+    );
+    return r.changes > 0;
+  }
+
+  async upsertGroup(code: string, name: string): Promise<void> {
+    await this.ex.run(
+      `INSERT INTO master_groups (group_code, group_name) VALUES ($1, $2)
+       ON CONFLICT (group_code) DO NOTHING`,
+      [code, name],
+    );
+  }
+  async upsertRole(
+    code: string,
+    name: string,
+    groupCode: string,
+    description?: string,
+  ): Promise<void> {
+    await this.ex.run(
+      `INSERT INTO master_roles (role_code, role_name, group_code, description) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (role_code) DO NOTHING`,
+      [code, name, groupCode, description ?? null],
+    );
+  }
+  async upsertPosition(code: string, name: string, groupCode: string): Promise<void> {
+    await this.ex.run(
+      `INSERT INTO master_position (position_code, position_name, group_code) VALUES ($1, $2, $3)
+       ON CONFLICT (position_code) DO NOTHING`,
+      [code, name, groupCode],
+    );
+  }
+
+  async createSession(userId: number, token: string, expiresAt: string): Promise<void> {
+    await this.ex.run(
+      "INSERT INTO auth_sessions (token, user_id, expires_at) VALUES ($1, $2, $3)",
+      [token, userId, expiresAt],
+    );
+  }
+  async findSession(token: string): Promise<AuthSession | null> {
+    const row = await this.ex.get<M.AuthSessionRow>(
+      "SELECT token, user_id, expires_at FROM auth_sessions WHERE token = $1 AND revoked_at IS NULL",
+      [token],
+    );
+    return row ? M.toAuthSession(row) : null;
+  }
+  async revokeSession(token: string): Promise<void> {
+    await this.ex.run("UPDATE auth_sessions SET revoked_at = now() WHERE token = $1", [token]);
+  }
 }
 
 class PgClinicRepository implements ClinicRepo {
@@ -601,5 +840,6 @@ export function makePgRepos(ex: Executor): Repositories {
     staff: new PgStaffRepository(ex),
     slotPresets: new PgSlotPresetRepository(ex),
     shifts: new PgShiftRepository(ex),
+    auth: new PgAuthRepository(ex),
   };
 }

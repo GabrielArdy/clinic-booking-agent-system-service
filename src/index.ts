@@ -3,6 +3,7 @@ import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { logger } from "./logging/logger.js";
 import { buildRepositories } from "./repositories/factory.js";
+import { AuthService } from "./services/auth-service.js";
 import { BookingService } from "./services/booking-service.js";
 import { InMemorySlotLock, RedisSlotLock, type SlotLock } from "./services/slot-lock.js";
 import { ConversationRouter } from "./conversation/router.js";
@@ -20,6 +21,7 @@ const slotLock: SlotLock = config.redisUrl
   ? new RedisSlotLock(config.redisUrl, config.slotHoldTtlSeconds)
   : new InMemorySlotLock(config.slotHoldTtlSeconds * 1000);
 const booking = new BookingService(db, makeRepos, undefined, slotLock);
+const auth = new AuthService(repos);
 
 function buildAI(): AIProviderAdapter {
   if (!config.ai.enabled) return new DisabledAIProvider();
@@ -35,7 +37,7 @@ function buildAI(): AIProviderAdapter {
 const ai = buildAI();
 const conversation = new ConversationRouter(booking, repos.sessions, ai);
 
-const app = createApp({ config, conversation, booking, repos });
+const app = createApp({ config, conversation, booking, auth, repos });
 
 const server = app.listen(config.port, () => {
   logger.info("server started", {

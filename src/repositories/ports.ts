@@ -1,7 +1,13 @@
 import type { Executor } from "../db/executor.js";
 import type {
+  ActiveStatus,
   AppointmentEntry,
+  AuditLogEntry,
+  AuthSession,
   Booking,
+  MasterGroup,
+  MasterPosition,
+  MasterRole,
   ClinicSetting,
   Doctor,
   Patient,
@@ -165,6 +171,79 @@ export interface SessionRepo {
 
 export interface AuditRepo {
   record(eventType: string, payload: Record<string, unknown>): Promise<void>;
+  /** Newest first, optional event-type filter. For the admin Audit Log page. */
+  list(opts: { limit: number; offset: number; eventType?: string }): Promise<AuditLogEntry[]>;
+}
+
+// ---- auth / RBAC ----
+
+/** users row + position join; the only shape that carries the password hash. */
+export interface AuthUserRecord {
+  id: number;
+  email: string;
+  passwordHash: string;
+  fullName: string;
+  positionCode: string;
+  positionName: string;
+  groupCode: string;
+  doctorId: number | null;
+  staffId: number | null;
+  status: ActiveStatus;
+}
+
+export interface CreateUserInput {
+  email: string;
+  passwordHash: string;
+  fullName: string;
+  positionCode: string;
+  doctorId?: number | null;
+  staffId?: number | null;
+}
+
+export interface UpdateUserInput {
+  fullName?: string;
+  passwordHash?: string;
+  positionCode?: string;
+  doctorId?: number | null;
+  staffId?: number | null;
+  status?: ActiveStatus;
+}
+
+export interface AuthRepo {
+  // users
+  findUserByEmail(email: string): Promise<AuthUserRecord | null>;
+  findUserById(id: number): Promise<AuthUserRecord | null>;
+  listUsers(): Promise<AuthUserRecord[]>;
+  createUser(input: CreateUserInput): Promise<AuthUserRecord>;
+  updateUser(id: number, patch: UpdateUserInput): Promise<AuthUserRecord | null>;
+  // role assignments (transactional user_roles)
+  rolesForUser(userId: number): Promise<string[]>;
+  setUserRoles(userId: number, roleCodes: string[]): Promise<void>;
+  // masters
+  listGroups(): Promise<MasterGroup[]>;
+  listRoles(): Promise<MasterRole[]>;
+  listPositions(): Promise<MasterPosition[]>;
+  findPositionByCode(code: string): Promise<MasterPosition | null>;
+  createPosition(input: {
+    positionCode: string;
+    positionName: string;
+    groupCode: string;
+  }): Promise<MasterPosition>;
+  updatePosition(
+    code: string,
+    patch: { positionName?: string; groupCode?: string },
+  ): Promise<MasterPosition | null>;
+  /** Soft delete (sets deleted_at). */
+  deletePosition(code: string): Promise<boolean>;
+  // idempotent seed helpers
+  upsertGroup(code: string, name: string): Promise<void>;
+  upsertRole(code: string, name: string, groupCode: string, description?: string): Promise<void>;
+  upsertPosition(code: string, name: string, groupCode: string): Promise<void>;
+  // sessions (opaque bearer tokens)
+  createSession(userId: number, token: string, expiresAt: string): Promise<void>;
+  /** Non-revoked session or null; expiry is checked by the service. */
+  findSession(token: string): Promise<AuthSession | null>;
+  revokeSession(token: string): Promise<void>;
 }
 
 export interface ClinicRepo {
@@ -222,6 +301,7 @@ export interface Repositories {
   staff: StaffRepo;
   slotPresets: SlotPresetRepo;
   shifts: ShiftRepo;
+  auth: AuthRepo;
 }
 
 /** Builds a repositories bundle over a given executor (dialect-specific). */

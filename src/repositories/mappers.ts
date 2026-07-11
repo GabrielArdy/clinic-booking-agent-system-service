@@ -1,7 +1,13 @@
 import { toBool } from "../db/executor.js";
 import type {
+  ActiveStatus,
   AppointmentEntry,
+  AuditLogEntry,
+  AuthSession,
   Booking,
+  MasterGroup,
+  MasterPosition,
+  MasterRole,
   ClinicSetting,
   Doctor,
   Patient,
@@ -156,6 +162,93 @@ export function toAppointmentEntry(r: AppointmentRow): AppointmentEntry {
       fullName: r.patient_name,
       phone: r.patient_phone,
     },
+  };
+}
+
+// ---- auth / RBAC rows ----
+
+export interface GroupRow {
+  id: number;
+  group_name: string;
+  group_code: string;
+  group_status: ActiveStatus;
+}
+export function toGroup(r: GroupRow): MasterGroup {
+  return { id: r.id, groupName: r.group_name, groupCode: r.group_code, groupStatus: r.group_status };
+}
+
+export interface RoleRow {
+  id: number;
+  role_code: string;
+  role_name: string;
+  description: string | null;
+  group_code: string;
+  role_status: ActiveStatus;
+}
+export function toRole(r: RoleRow): MasterRole {
+  return {
+    id: r.id,
+    roleCode: r.role_code,
+    roleName: r.role_name,
+    description: r.description,
+    groupCode: r.group_code,
+    roleStatus: r.role_status,
+  };
+}
+
+export interface PositionRow {
+  id: number;
+  position_code: string;
+  position_name: string;
+  group_code: string;
+}
+export function toPosition(r: PositionRow): MasterPosition {
+  return {
+    id: r.id,
+    positionCode: r.position_code,
+    positionName: r.position_name,
+    groupCode: r.group_code,
+  };
+}
+
+export interface AuthUserRow {
+  id: number;
+  email: string;
+  password_hash: string;
+  full_name: string;
+  position_code: string;
+  position_name: string;
+  group_code: string;
+  doctor_id: number | null;
+  staff_id: number | null;
+  user_status: ActiveStatus;
+}
+
+export interface AuthSessionRow {
+  token: string;
+  user_id: number;
+  expires_at: string | Date;
+}
+export function toAuthSession(r: AuthSessionRow): AuthSession {
+  return {
+    token: r.token,
+    userId: r.user_id,
+    expiresAt: typeof r.expires_at === "string" ? r.expires_at : r.expires_at.toISOString(),
+  };
+}
+
+export interface AuditRow {
+  id: number;
+  event_type: string;
+  payload_json: string;
+  created_at: string | Date;
+}
+export function toAuditEntry(r: AuditRow): AuditLogEntry {
+  return {
+    id: r.id,
+    eventType: r.event_type,
+    payload: safeParse(r.payload_json),
+    createdAt: typeof r.created_at === "string" ? r.created_at : r.created_at.toISOString(),
   };
 }
 
