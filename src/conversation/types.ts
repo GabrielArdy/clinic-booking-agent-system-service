@@ -16,6 +16,10 @@ export const STAGES = [
   "cancellation_complete",
   "cancelled",
   "handoff_pending",
+  "connect_collect_name",
+  "connect_collect_title",
+  "connect_collect_phone",
+  "connect_waiting",
 ] as const;
 
 export type Stage = (typeof STAGES)[number];
@@ -35,6 +39,12 @@ export interface ConversationState {
   /** Check/cancel flow: reference + phone the user is looking up. */
   lookupReference?: string;
   lookupPhone?: string;
+  /** Connect-with-staff flow: personal info + the created live chat session. */
+  connectTitle?: "Mr" | "Mrs" | "Ms";
+  connectName?: string;
+  connectPhone?: string;
+  liveChatSessionId?: number;
+  liveChatPatientKey?: string;
   invalidCount?: number;
 }
 
@@ -52,6 +62,11 @@ export interface AssistantTurn {
   quickReplies: QuickReply[];
   collectedEntities: ConversationState;
   errors: string[];
+  /**
+   * Present once the connect-with-staff flow created a live chat session.
+   * The FE should switch to the WebSocket: /ws?role=patient&key=<patientKey>.
+   */
+  liveChat?: { sessionId: number; patientKey: string; wsPath: string };
 }
 
 /** What the interpreter decided the user meant. */

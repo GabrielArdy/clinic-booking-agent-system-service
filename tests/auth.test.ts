@@ -19,7 +19,8 @@ describe("seeded RBAC masters", () => {
     const roles = (await repos.auth.listRoles()).map((r) => r.roleCode);
     expect(roles).toContain(ROLES.CMS_POSITION);
     expect(roles).toContain(ROLES.STF_DASHBOARD);
-    expect(roles).toHaveLength(12);
+    expect(roles).toContain(ROLES.STF_CHAT);
+    expect(roles).toHaveLength(13);
 
     const positions = (await repos.auth.listPositions()).map((p) => p.positionCode);
     expect(positions).toEqual(expect.arrayContaining(["A001", "D001", "D012", "N001", "P001", "DA01"]));

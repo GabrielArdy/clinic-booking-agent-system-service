@@ -31,6 +31,7 @@ export const ROLES = {
   DOC_APPOINTMENT: "DOC_APPOINTMENT", // own appointment list + detail
   // Staff group
   STF_DASHBOARD: "STF_DASHBOARD", // today's shift info
+  STF_CHAT: "STF_CHAT", // live chat with patients (staff console; admins pass via ADM_DASHBOARD)
 } as const;
 
 export type RoleCode = (typeof ROLES)[keyof typeof ROLES];
@@ -48,7 +49,7 @@ export const GROUP_DEFAULT_ROLES: Record<string, RoleCode[]> = {
     ROLES.CMS_POSITION,
   ],
   [GROUPS.DOCTOR]: [ROLES.DOC_DASHBOARD, ROLES.DOC_EXCEPTION, ROLES.DOC_APPOINTMENT],
-  [GROUPS.STAFF]: [ROLES.STF_DASHBOARD],
+  [GROUPS.STAFF]: [ROLES.STF_DASHBOARD, ROLES.STF_CHAT],
 };
 
 export interface LoginResult {

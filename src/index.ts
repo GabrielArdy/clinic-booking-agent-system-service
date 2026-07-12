@@ -5,7 +5,9 @@ import { logger } from "./logging/logger.js";
 import { buildRepositories } from "./repositories/factory.js";
 import { AuthService } from "./services/auth-service.js";
 import { BookingService } from "./services/booking-service.js";
+import { LiveChatService } from "./services/live-chat-service.js";
 import { InMemorySlotLock, RedisSlotLock, type SlotLock } from "./services/slot-lock.js";
+import { ChatHub } from "./ws/chat-hub.js";
 import { ConversationRouter } from "./conversation/router.js";
 import { DisabledAIProvider, type AIProviderAdapter } from "./ai/provider.js";
 import { OpenRouterAdapter } from "./ai/openrouter-adapter.js";
@@ -22,6 +24,7 @@ const slotLock: SlotLock = config.redisUrl
   : new InMemorySlotLock(config.slotHoldTtlSeconds * 1000);
 const booking = new BookingService(db, makeRepos, undefined, slotLock);
 const auth = new AuthService(repos);
+const liveChat = new LiveChatService(repos);
 
 function buildAI(): AIProviderAdapter {
   if (!config.ai.enabled) return new DisabledAIProvider();
@@ -35,9 +38,9 @@ function buildAI(): AIProviderAdapter {
     : new OpenRouterAdapter(opts);
 }
 const ai = buildAI();
-const conversation = new ConversationRouter(booking, repos.sessions, ai);
+const conversation = new ConversationRouter(booking, repos.sessions, ai, liveChat);
 
-const app = createApp({ config, conversation, booking, auth, repos });
+const app = createApp({ config, conversation, booking, auth, liveChat, repos });
 
 const server = app.listen(config.port, () => {
   logger.info("server started", {
@@ -49,8 +52,12 @@ const server = app.listen(config.port, () => {
   });
 });
 
+// Live chat WebSocket endpoint (/ws) on the same HTTP server.
+const chatHub = new ChatHub(server, auth, liveChat);
+
 function shutdown(): void {
   logger.info("shutting down");
+  chatHub.close();
   server.close(() => {
     void Promise.allSettled([db.close(), slotLock.close?.()]).finally(() => process.exit(0));
   });

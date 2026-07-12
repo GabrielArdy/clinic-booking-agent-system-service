@@ -88,6 +88,7 @@ const ROLE_SEED: [string, string, string, string][] = [
   [ROLES.DOC_EXCEPTION, "Doctor Exceptions", GROUPS.DOCTOR, "Own blocking time management"],
   [ROLES.DOC_APPOINTMENT, "Doctor Appointments", GROUPS.DOCTOR, "Own appointment list + detail"],
   [ROLES.STF_DASHBOARD, "Staff Dashboard", GROUPS.STAFF, "Today's shift info"],
+  [ROLES.STF_CHAT, "Staff Live Chat", GROUPS.STAFF, "Handle patient live chat sessions"],
 ];
 
 const POSITION_SEED: [string, string, string][] = [
@@ -205,7 +206,16 @@ export async function seed(db: Database): Promise<void> {
       },
     ];
     for (const u of demoUsers) {
-      if (await r.auth.findUserByEmail(u.email)) continue;
+      const bundle = GROUP_DEFAULT_ROLES[u.groupCode] ?? [];
+      const existing = await r.auth.findUserByEmail(u.email);
+      if (existing) {
+        // Top-up: grant bundle roles added after the account was first seeded
+        // (e.g. STF_CHAT) without dropping any manually assigned roles.
+        const current = await r.auth.rolesForUser(existing.id);
+        const merged = [...new Set([...current, ...bundle])];
+        if (merged.length !== current.length) await r.auth.setUserRoles(existing.id, merged);
+        continue;
+      }
       const created = await r.auth.createUser({
         email: u.email,
         passwordHash: hashPassword(u.password),
@@ -214,7 +224,7 @@ export async function seed(db: Database): Promise<void> {
         doctorId: u.doctorId ?? null,
         staffId: u.staffId ?? null,
       });
-      await r.auth.setUserRoles(created.id, GROUP_DEFAULT_ROLES[u.groupCode] ?? []);
+      await r.auth.setUserRoles(created.id, bundle);
     }
   });
 }

@@ -10,7 +10,12 @@ import type {
   MasterRole,
   ClinicSetting,
   Doctor,
+  LiveChatCloseReason,
+  LiveChatMessage,
+  LiveChatSession,
+  LiveChatStatus,
   Patient,
+  PatientTitle,
   ScheduleException,
   ScheduleRule,
   Shift,
@@ -175,6 +180,40 @@ export interface AuditRepo {
   list(opts: { limit: number; offset: number; eventType?: string }): Promise<AuditLogEntry[]>;
 }
 
+// ---- live chat ----
+
+export interface CreateLiveChatInput {
+  /** Secret access key handed to the patient; authenticates their socket. */
+  patientKey: string;
+  conversationSessionId?: string | null;
+  patientTitle: PatientTitle;
+  patientName: string;
+  patientPhone: string;
+}
+
+export interface LiveChatRepo {
+  createSession(input: CreateLiveChatInput): Promise<LiveChatSession>;
+  findById(id: number): Promise<LiveChatSession | null>;
+  /** Patient WebSocket auth: session by its secret key. */
+  findByPatientKey(key: string): Promise<LiveChatSession | null>;
+  /** Newest first; optional status filter. */
+  listSessions(opts?: { status?: LiveChatStatus }): Promise<LiveChatSession[]>;
+  /** The one active session a staff user is handling, if any. */
+  activeSessionForStaff(staffUserId: number): Promise<LiveChatSession | null>;
+  /** Atomic claim: only succeeds while the session is still 'waiting'. */
+  claim(id: number, staffUserId: number, staffName: string): Promise<LiveChatSession | null>;
+  /** Atomic close: only succeeds while the session is not yet 'closed'. */
+  close(id: number, reason: LiveChatCloseReason): Promise<LiveChatSession | null>;
+  /** Marks patient activity (message/typing) — feeds the idle auto-close. */
+  touchPatient(id: number, atIso: string): Promise<void>;
+  appendMessage(
+    sessionId: number,
+    sender: "patient" | "staff" | "system",
+    body: string,
+  ): Promise<LiveChatMessage>;
+  messages(sessionId: number): Promise<LiveChatMessage[]>;
+}
+
 // ---- auth / RBAC ----
 
 /** users row + position join; the only shape that carries the password hash. */
@@ -302,6 +341,7 @@ export interface Repositories {
   slotPresets: SlotPresetRepo;
   shifts: ShiftRepo;
   auth: AuthRepo;
+  liveChat: LiveChatRepo;
 }
 
 /** Builds a repositories bundle over a given executor (dialect-specific). */

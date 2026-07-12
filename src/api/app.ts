@@ -6,11 +6,13 @@ import { logger } from "../logging/logger.js";
 import type { ConversationRouter } from "../conversation/router.js";
 import type { AuthService } from "../services/auth-service.js";
 import type { BookingService } from "../services/booking-service.js";
+import type { LiveChatService } from "../services/live-chat-service.js";
 import type { Repositories } from "../repositories/ports.js";
 import { adminRouter } from "./admin.js";
 import { authRouter } from "./auth.js";
 import { cmsRouter } from "./cms.js";
 import { doctorRouter } from "./doctor.js";
+import { liveChatRouter } from "./livechat.js";
 import { staffRouter } from "./staff.js";
 
 const chatSchema = z.object({
@@ -33,6 +35,8 @@ const DOMAIN_STATUS: Record<DomainError["code"], number> = {
   TOO_LATE_TO_CANCEL: 409,
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,
+  STAFF_BUSY: 409,
+  CHAT_CLOSED: 409,
 };
 
 export function createApp(params: {
@@ -40,9 +44,10 @@ export function createApp(params: {
   conversation: ConversationRouter;
   booking: BookingService;
   auth: AuthService;
+  liveChat: LiveChatService;
   repos: Repositories;
 }): express.Express {
-  const { config, conversation, booking, auth, repos } = params;
+  const { config, conversation, booking, auth, liveChat, repos } = params;
   const app = express();
   // CORS: allowlist from CORS_ORIGINS (comma-separated); "*" = any origin.
   const allowAllOrigins = config.corsOrigins.includes("*");
@@ -123,6 +128,7 @@ export function createApp(params: {
   app.use("/api/cms", cmsRouter(config, auth, repos));
   app.use("/api/doctor", doctorRouter(config, auth, booking, repos));
   app.use("/api/staff", staffRouter(config, auth, repos));
+  app.use("/api/livechat", liveChatRouter(config, auth, liveChat));
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof z.ZodError) {

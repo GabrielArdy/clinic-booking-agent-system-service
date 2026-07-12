@@ -11,6 +11,10 @@ import type {
   MasterPosition,
   MasterRole,
   Doctor,
+  LiveChatCloseReason,
+  LiveChatMessage,
+  LiveChatSession,
+  LiveChatStatus,
   Patient,
   ScheduleException,
   ScheduleRule,
@@ -31,9 +35,11 @@ import type {
   ClinicRepo,
   CreateAssignmentInput,
   CreateDoctorInput,
+  CreateLiveChatInput,
   CreateStaffInput,
   CreateUserInput,
   DoctorRepo,
+  LiveChatRepo,
   PatientRepo,
   Repositories,
   ScheduleRepo,
@@ -595,6 +601,106 @@ class SqliteAuthRepository implements AuthRepo {
   }
 }
 
+const LIVE_CHAT_SELECT = `
+  SELECT id, patient_title, patient_name, patient_phone, status, staff_user_id,
+         staff_name, closed_reason, last_patient_event_at, created_at, claimed_at, closed_at
+  FROM chat_sessions
+`;
+
+class SqliteLiveChatRepository implements LiveChatRepo {
+  constructor(private readonly ex: Executor) {}
+
+  async createSession(input: CreateLiveChatInput): Promise<LiveChatSession> {
+    const r = await this.ex.run(
+      `INSERT INTO chat_sessions
+         (patient_key, conversation_session_id, patient_title, patient_name, patient_phone)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        input.patientKey,
+        input.conversationSessionId ?? null,
+        input.patientTitle,
+        input.patientName,
+        input.patientPhone,
+      ],
+    );
+    return (await this.findById(r.lastId!))!;
+  }
+  async findById(id: number): Promise<LiveChatSession | null> {
+    const row = await this.ex.get<M.LiveChatSessionRow>(`${LIVE_CHAT_SELECT} WHERE id = ?`, [id]);
+    return row ? M.toLiveChatSession(row) : null;
+  }
+  async findByPatientKey(key: string): Promise<LiveChatSession | null> {
+    const row = await this.ex.get<M.LiveChatSessionRow>(
+      `${LIVE_CHAT_SELECT} WHERE patient_key = ?`,
+      [key],
+    );
+    return row ? M.toLiveChatSession(row) : null;
+  }
+  async listSessions(opts?: { status?: LiveChatStatus }): Promise<LiveChatSession[]> {
+    const rows = opts?.status
+      ? await this.ex.all<M.LiveChatSessionRow>(
+          `${LIVE_CHAT_SELECT} WHERE status = ? ORDER BY id DESC`,
+          [opts.status],
+        )
+      : await this.ex.all<M.LiveChatSessionRow>(`${LIVE_CHAT_SELECT} ORDER BY id DESC`);
+    return rows.map(M.toLiveChatSession);
+  }
+  async activeSessionForStaff(staffUserId: number): Promise<LiveChatSession | null> {
+    const row = await this.ex.get<M.LiveChatSessionRow>(
+      `${LIVE_CHAT_SELECT} WHERE staff_user_id = ? AND status = 'active'`,
+      [staffUserId],
+    );
+    return row ? M.toLiveChatSession(row) : null;
+  }
+  async claim(id: number, staffUserId: number, staffName: string): Promise<LiveChatSession | null> {
+    const r = await this.ex.run(
+      `UPDATE chat_sessions
+       SET status = 'active', staff_user_id = ?, staff_name = ?, claimed_at = datetime('now')
+       WHERE id = ? AND status = 'waiting'`,
+      [staffUserId, staffName, id],
+    );
+    return r.changes > 0 ? this.findById(id) : null;
+  }
+  async close(id: number, reason: LiveChatCloseReason): Promise<LiveChatSession | null> {
+    const r = await this.ex.run(
+      `UPDATE chat_sessions
+       SET status = 'closed', closed_reason = ?, closed_at = datetime('now')
+       WHERE id = ? AND status <> 'closed'`,
+      [reason, id],
+    );
+    return r.changes > 0 ? this.findById(id) : null;
+  }
+  async touchPatient(id: number, atIso: string): Promise<void> {
+    await this.ex.run("UPDATE chat_sessions SET last_patient_event_at = ? WHERE id = ?", [
+      atIso,
+      id,
+    ]);
+  }
+  async appendMessage(
+    sessionId: number,
+    sender: "patient" | "staff" | "system",
+    body: string,
+  ): Promise<LiveChatMessage> {
+    const r = await this.ex.run(
+      "INSERT INTO chat_session_messages (session_id, sender, body) VALUES (?, ?, ?)",
+      [sessionId, sender, body],
+    );
+    const row = await this.ex.get<M.LiveChatMessageRow>(
+      "SELECT id, session_id, sender, body, created_at FROM chat_session_messages WHERE id = ?",
+      [r.lastId!],
+    );
+    return M.toLiveChatMessage(row!);
+  }
+  async messages(sessionId: number): Promise<LiveChatMessage[]> {
+    const rows = await this.ex.all<M.LiveChatMessageRow>(
+      `SELECT id, session_id, sender, body, created_at FROM chat_session_messages
+       WHERE session_id = ? ORDER BY id`,
+      [sessionId],
+    );
+    return rows.map(M.toLiveChatMessage);
+  }
+}
+
 class SqliteClinicRepository implements ClinicRepo {
   constructor(private readonly ex: Executor) {}
   async get(): Promise<ClinicSetting> {
@@ -837,5 +943,6 @@ export function makeSqliteRepos(ex: Executor): Repositories {
     slotPresets: new SqliteSlotPresetRepository(ex),
     shifts: new SqliteShiftRepository(ex),
     auth: new SqliteAuthRepository(ex),
+    liveChat: new SqliteLiveChatRepository(ex),
   };
 }

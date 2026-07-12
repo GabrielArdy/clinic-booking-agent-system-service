@@ -152,6 +152,39 @@ export interface AuditLogEntry {
   createdAt: string;
 }
 
+// ---- live chat (patient <-> staff) ----
+
+export type LiveChatStatus = "waiting" | "active" | "closed";
+export type LiveChatCloseReason = "completed_by_staff" | "completed_by_patient" | "timeout";
+export type PatientTitle = "Mr" | "Mrs" | "Ms";
+
+/**
+ * A patient <-> staff chat session. The patient's secret access key is NOT
+ * part of this shape — it is only returned once, to the patient, at creation.
+ */
+export interface LiveChatSession {
+  id: number;
+  patientTitle: PatientTitle;
+  patientName: string;
+  patientPhone: string;
+  status: LiveChatStatus;
+  staffUserId: number | null;
+  staffName: string | null;
+  closedReason: LiveChatCloseReason | null;
+  lastPatientEventAt: string; // ISO datetime
+  createdAt: string;
+  claimedAt: string | null;
+  closedAt: string | null;
+}
+
+export interface LiveChatMessage {
+  id: number;
+  sessionId: number;
+  sender: "patient" | "staff" | "system";
+  body: string;
+  createdAt: string;
+}
+
 // ---- CMS console entities ----
 
 export interface ClinicSetting {
@@ -222,7 +255,9 @@ export class DomainError extends Error {
       | "TOO_LATE_TO_BOOK"
       | "TOO_LATE_TO_CANCEL"
       | "UNAUTHORIZED"
-      | "FORBIDDEN",
+      | "FORBIDDEN"
+      | "STAFF_BUSY"
+      | "CHAT_CLOSED",
     message: string,
   ) {
     super(message);

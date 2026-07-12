@@ -5,6 +5,7 @@ import { seed } from "../src/db/seed.js";
 import { repositoryFactory } from "../src/repositories/factory.js";
 import type { Repositories } from "../src/repositories/ports.js";
 import { BookingService } from "../src/services/booking-service.js";
+import { LiveChatService } from "../src/services/live-chat-service.js";
 import type { SlotLock } from "../src/services/slot-lock.js";
 
 /** Fresh in-memory sqlite database, migrated and seeded. */
@@ -21,6 +22,10 @@ export function testRepos(db: Database): Repositories {
 
 export function bookingService(db: Database, now?: () => Date, slotLock?: SlotLock): BookingService {
   return new BookingService(db, repositoryFactory(db.type), now, slotLock);
+}
+
+export function liveChatService(db: Database, now?: () => Date): LiveChatService {
+  return new LiveChatService(testRepos(db), now);
 }
 
 /** Next date (from tomorrow) falling on the given weekday, as YYYY-MM-DD. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bookingService, testDb, testRepos, nextDateForWeekday } from "./helpers.js";
+import { bookingService, liveChatService, testDb, testRepos, nextDateForWeekday } from "./helpers.js";
 import { ConversationRouter } from "../src/conversation/router.js";
 import { DisabledAIProvider } from "../src/ai/provider.js";
 import type { SlotLock } from "../src/services/slot-lock.js";
@@ -8,8 +8,9 @@ async function setup(slotLock?: SlotLock) {
   const db = await testDb();
   const booking = bookingService(db, undefined, slotLock);
   const sessions = testRepos(db).sessions;
-  const router = new ConversationRouter(booking, sessions, new DisabledAIProvider());
-  return { db, booking, sessions, router };
+  const liveChat = liveChatService(db);
+  const router = new ConversationRouter(booking, sessions, new DisabledAIProvider(), liveChat);
+  return { db, booking, sessions, router, liveChat };
 }
 
 const MONDAY = nextDateForWeekday(1);
@@ -23,6 +24,7 @@ describe("ConversationRouter", () => {
     expect(turn.quickReplies.map((q) => q.label)).toEqual([
       "Book an appointment",
       "Check or cancel an appointment",
+      "Connect with staff",
     ]);
     const sessionId = turn.sessionId;
 
@@ -324,5 +326,48 @@ describe("ConversationRouter", () => {
     expect(turn.stage).toBe("check_result");
     expect(turn.message).toContain("cancelled");
     expect(turn.quickReplies.map((q) => q.label)).toEqual(["Main menu"]);
+  });
+
+  it("connects with staff: name -> title -> phone -> waiting live chat session", async () => {
+    const { router, liveChat } = await setup();
+
+    const first = await router.handle(undefined, "hi");
+    const sessionId = first.sessionId;
+
+    let turn = await router.handle(sessionId, "3");
+    expect(turn.stage).toBe("connect_collect_name");
+
+    turn = await router.handle(sessionId, "Andi Wijaya");
+    expect(turn.stage).toBe("connect_collect_title");
+    expect(turn.quickReplies.map((q) => q.label)).toEqual(["Mr", "Mrs", "Ms"]);
+
+    turn = await router.handle(sessionId, "Mr");
+    expect(turn.stage).toBe("connect_collect_phone");
+
+    turn = await router.handle(sessionId, "0812-3456-7890");
+    expect(turn.stage).toBe("connect_waiting");
+    expect(turn.message).toContain("staff chat queue");
+    expect(turn.liveChat).toBeDefined();
+    expect(turn.liveChat!.wsPath).toContain(`key=${turn.liveChat!.patientKey}`);
+
+    const session = await liveChat.getSession(turn.liveChat!.sessionId);
+    expect(session.status).toBe("waiting");
+    expect(session.patientTitle).toBe("Mr");
+    expect(session.patientName).toBe("Andi Wijaya");
+    expect(session.patientPhone).toBe("6281234567890");
+  });
+
+  it("rejects an invalid phone number in the connect flow", async () => {
+    const { router } = await setup();
+    const first = await router.handle(undefined, "hi");
+    const sessionId = first.sessionId;
+    await router.handle(sessionId, "3");
+    await router.handle(sessionId, "Andi Wijaya");
+    await router.handle(sessionId, "Ms");
+
+    const turn = await router.handle(sessionId, "not-a-phone");
+    expect(turn.stage).toBe("connect_collect_phone");
+    expect(turn.message).toContain("valid phone number");
+    expect(turn.liveChat).toBeUndefined();
   });
 });

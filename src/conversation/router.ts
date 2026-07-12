@@ -6,6 +6,7 @@ import {
   type BookingService,
 } from "../services/booking-service.js";
 import { normalizePhone } from "../services/phone.js";
+import type { LiveChatService } from "../services/live-chat-service.js";
 import type { SessionRepo } from "../repositories/ports.js";
 import { interpret } from "./interpret.js";
 import type {
@@ -22,13 +23,19 @@ const FREE_TEXT_STAGES: Stage[] = [
   "collect_patient_phone",
   "check_collect_reference",
   "check_collect_phone",
+  "connect_collect_name",
+  "connect_collect_phone",
 ];
 const TERMINAL_STAGES: Stage[] = [
   "booking_complete",
   "cancellation_complete",
   "cancelled",
   "handoff_pending",
+  // Live chat continues over the WebSocket; the bot flow is done.
+  "connect_waiting",
 ];
+
+const PATIENT_TITLES = ["Mr", "Mrs", "Ms"] as const;
 
 interface StageOption {
   label: string;
@@ -49,6 +56,7 @@ export class ConversationRouter {
     private readonly booking: BookingService,
     private readonly sessions: SessionRepo,
     private readonly ai: AIProviderAdapter,
+    private readonly liveChat: LiveChatService,
   ) {}
 
   async handle(sessionId: string | undefined, rawMessage: string): Promise<AssistantTurn> {
@@ -154,6 +162,12 @@ export class ConversationRouter {
         return this.handleCheckResult(sessionId, state, interpretation);
       case "confirm_cancellation":
         return this.handleConfirmCancellation(sessionId, state, interpretation);
+      case "connect_collect_name":
+        return this.handleConnectName(sessionId, state, interpretation);
+      case "connect_collect_title":
+        return this.handleConnectTitle(sessionId, state, interpretation);
+      case "connect_collect_phone":
+        return this.handleConnectPhone(sessionId, state, interpretation);
       default:
         return this.invalidInput(sessionId, stage, state);
     }
@@ -172,6 +186,9 @@ export class ConversationRouter {
     }
     if (interpretation.index === 1) {
       return this.enterStage(sessionId, "check_collect_reference", { invalidCount: 0 });
+    }
+    if (interpretation.index === 2) {
+      return this.enterStage(sessionId, "connect_collect_name", { invalidCount: 0 });
     }
     return this.invalidInput(sessionId, "select_purpose", state);
   }
@@ -547,6 +564,82 @@ export class ConversationRouter {
     return this.enterStage(sessionId, "cancellation_complete", { ...state, invalidCount: 0 });
   }
 
+  // ---- connect-with-staff flow ----
+
+  private async handleConnectName(
+    sessionId: string,
+    state: ConversationState,
+    interpretation: Interpretation,
+  ): Promise<AssistantTurn> {
+    if (interpretation.kind !== "text") {
+      return this.invalidInput(sessionId, "connect_collect_name", state);
+    }
+    const name = interpretation.value.trim();
+    if (name.length < 2 || name.length > 100 || /\d/.test(name)) {
+      return this.enterStage(sessionId, "connect_collect_name", state, [
+        "That doesn't look like a valid name. Please enter your full name.",
+      ]);
+    }
+    return this.enterStage(sessionId, "connect_collect_title", {
+      ...state,
+      invalidCount: 0,
+      connectName: name,
+    });
+  }
+
+  private async handleConnectTitle(
+    sessionId: string,
+    state: ConversationState,
+    interpretation: Interpretation,
+  ): Promise<AssistantTurn> {
+    if (interpretation.kind !== "option" || !state.connectName) {
+      return this.invalidInput(sessionId, "connect_collect_title", state);
+    }
+    const title = PATIENT_TITLES[interpretation.index];
+    if (!title) return this.invalidInput(sessionId, "connect_collect_title", state);
+    return this.enterStage(sessionId, "connect_collect_phone", {
+      ...state,
+      invalidCount: 0,
+      connectTitle: title,
+    });
+  }
+
+  private async handleConnectPhone(
+    sessionId: string,
+    state: ConversationState,
+    interpretation: Interpretation,
+  ): Promise<AssistantTurn> {
+    if (!state.connectName || !state.connectTitle) {
+      return this.invalidInput(sessionId, "connect_collect_phone", state);
+    }
+    const raw = interpretation.kind === "text" ? interpretation.value : "";
+    const phone = normalizePhone(raw);
+    if (!phone) {
+      return this.enterStage(sessionId, "connect_collect_phone", state, [
+        "That doesn't look like a valid phone number. Please enter an active number, e.g. 0812-3456-7890.",
+      ]);
+    }
+    const { session, patientKey } = await this.liveChat.requestChat({
+      patientTitle: state.connectTitle,
+      patientName: state.connectName,
+      patientPhone: phone,
+      conversationSessionId: sessionId,
+    });
+    const turn = await this.enterStage(sessionId, "connect_waiting", {
+      ...state,
+      invalidCount: 0,
+      connectPhone: phone,
+      liveChatSessionId: session.id,
+      liveChatPatientKey: patientKey,
+    });
+    turn.liveChat = {
+      sessionId: session.id,
+      patientKey,
+      wsPath: `/ws?role=patient&key=${patientKey}`,
+    };
+    return turn;
+  }
+
   private async invalidInput(
     sessionId: string,
     stage: Stage,
@@ -602,7 +695,11 @@ export class ConversationRouter {
       case "select_purpose":
         return {
           message: "What would you like to do?",
-          options: [{ label: "Book an appointment" }, { label: "Check or cancel an appointment" }],
+          options: [
+            { label: "Book an appointment" },
+            { label: "Check or cancel an appointment" },
+            { label: "Connect with staff" },
+          ],
         };
       case "select_specialty": {
         const options = (await this.booking.listSpecialties()).map((s) => ({ label: s.name }));
@@ -738,6 +835,27 @@ export class ConversationRouter {
         return { message: "Booking flow cancelled.", options: [] };
       case "handoff_pending":
         return { message: "Waiting for staff assistance.", options: [] };
+      case "connect_collect_name":
+        return {
+          message: "Sure — I'll connect you with our staff. May I have your full name?",
+          options: [],
+        };
+      case "connect_collect_title":
+        return {
+          message: `Thanks, ${state.connectName}. How should we address you?`,
+          options: PATIENT_TITLES.map((t) => ({ label: t })),
+        };
+      case "connect_collect_phone":
+        return { message: "And an active phone number we can reach you on?", options: [] };
+      case "connect_waiting":
+        return {
+          message: [
+            `Thank you, ${state.connectTitle} ${state.connectName}. You've been added to the staff chat queue.`,
+            "A staff member will join shortly — please keep this page open.",
+            "Note: the chat closes automatically after 3 minutes without activity from you.",
+          ].join("\n"),
+          options: [],
+        };
     }
   }
 }

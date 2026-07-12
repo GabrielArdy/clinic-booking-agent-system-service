@@ -5,6 +5,11 @@ import type {
   AuditLogEntry,
   AuthSession,
   Booking,
+  LiveChatCloseReason,
+  LiveChatMessage,
+  LiveChatSession,
+  LiveChatStatus,
+  PatientTitle,
   MasterGroup,
   MasterPosition,
   MasterRole,
@@ -162,6 +167,62 @@ export function toAppointmentEntry(r: AppointmentRow): AppointmentEntry {
       fullName: r.patient_name,
       phone: r.patient_phone,
     },
+  };
+}
+
+// ---- live chat rows ----
+
+/** pg returns TIMESTAMPTZ as Date, sqlite as string. */
+function toIso(v: string | Date | null): string | null {
+  if (v === null) return null;
+  return typeof v === "string" ? v : v.toISOString();
+}
+
+export interface LiveChatSessionRow {
+  id: number;
+  patient_title: PatientTitle;
+  patient_name: string;
+  patient_phone: string;
+  status: LiveChatStatus;
+  staff_user_id: number | null;
+  staff_name: string | null;
+  closed_reason: LiveChatCloseReason | null;
+  last_patient_event_at: string | Date;
+  created_at: string | Date;
+  claimed_at: string | Date | null;
+  closed_at: string | Date | null;
+}
+export function toLiveChatSession(r: LiveChatSessionRow): LiveChatSession {
+  return {
+    id: r.id,
+    patientTitle: r.patient_title,
+    patientName: r.patient_name,
+    patientPhone: r.patient_phone,
+    status: r.status,
+    staffUserId: r.staff_user_id,
+    staffName: r.staff_name,
+    closedReason: r.closed_reason,
+    lastPatientEventAt: toIso(r.last_patient_event_at)!,
+    createdAt: toIso(r.created_at)!,
+    claimedAt: toIso(r.claimed_at),
+    closedAt: toIso(r.closed_at),
+  };
+}
+
+export interface LiveChatMessageRow {
+  id: number;
+  session_id: number;
+  sender: "patient" | "staff" | "system";
+  body: string;
+  created_at: string | Date;
+}
+export function toLiveChatMessage(r: LiveChatMessageRow): LiveChatMessage {
+  return {
+    id: r.id,
+    sessionId: r.session_id,
+    sender: r.sender,
+    body: r.body,
+    createdAt: toIso(r.created_at)!,
   };
 }
 
