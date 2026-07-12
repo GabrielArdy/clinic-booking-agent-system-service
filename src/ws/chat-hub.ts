@@ -153,6 +153,12 @@ export class ChatHub {
       case "typing": {
         // Patient typing counts as activity so the idle close never fires mid-typing.
         if (ctx.kind === "patient") await this.chat.touchPatient(sessionId);
+        // Relay to the other side so the FE can show a typing indicator.
+        this.toRoom(
+          sessionId,
+          { type: "typing", from: ctx.kind === "patient" ? "patient" : "staff" },
+          { exclude: socket },
+        );
         return;
       }
       case "complete": {
@@ -194,11 +200,12 @@ export class ChatHub {
   private toRoom(
     sessionId: number,
     payload: Record<string, unknown>,
-    opts?: { patientsOnly?: boolean },
+    opts?: { patientsOnly?: boolean; exclude?: WebSocket },
   ): void {
     for (const [socket, ctx] of this.ctx) {
       if (ctx.sessionId !== sessionId) continue;
       if (opts?.patientsOnly && ctx.kind !== "patient") continue;
+      if (socket === opts?.exclude) continue;
       this.send(socket, payload);
     }
   }

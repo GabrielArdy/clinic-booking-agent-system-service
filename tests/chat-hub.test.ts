@@ -123,6 +123,12 @@ describe("ChatHub", () => {
     );
     await room.next("message"); // drain the same template frame on the staff side
 
+    // Typing indicator: relayed to the other side only (sender excluded).
+    patient.send({ type: "typing" });
+    expect((await room.next("typing")).from).toBe("patient");
+    room.send({ type: "typing" });
+    expect((await patient.next("typing")).from).toBe("staff");
+
     // Patient message -> staff room (and echoed back to the sender).
     patient.send({ type: "message", body: "Hi, I need help" });
     expect(((await room.next("message")).message as { body: string }).body).toBe(
